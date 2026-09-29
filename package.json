@@ -1,0 +1,7 @@
+{
+  "name": "candle",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  }
+}
