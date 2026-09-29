@@ -55,6 +55,17 @@ html, body {
   left: 0;
   right: 0;
   pointer-events: none;
+  opacity: 1;
+  transition: opacity 1.15s ease;
+}
+
+html[data-chrome="quiet"] .chrome {
+  opacity: 0;
+}
+
+html[data-chrome="quiet"] .chrome,
+html[data-chrome="quiet"] .chrome * {
+  pointer-events: none;
 }
 
 .topbar {
@@ -186,4 +197,5 @@ button:disabled {
 
 @media (prefers-reduced-motion: reduce) {
   #action:active:not(:disabled) { transform: none; }
+  .topbar, .bottom { transition-duration: 0.01s; }
 }

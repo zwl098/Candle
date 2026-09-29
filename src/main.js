@@ -795,6 +795,7 @@ const waxUniforms = {
   uEmit: { value: 0 },
   uSpec: { value: 0.18 },
   uTopY: { value: TOP_Y },
+  uReflect: { value: new THREE.Vector2() },
 };
 
 const waxVert = /* glsl */ `
@@ -823,6 +824,7 @@ const waxFrag = /* glsl */ `
   uniform float uEmit;
   uniform float uSpec;
   uniform float uTopY;
+  uniform vec2 uReflect;
   varying vec3 vWorld;
   varying vec3 vNormal;
   varying vec2 vUv;
@@ -864,6 +866,11 @@ const waxFrag = /* glsl */ `
       float meniscus = smoothstep(0.55, 0.84, poolRd) * (1.0 - smoothstep(0.9, 1.05, poolRd));
       col *= mix(1.0, 0.22, well);
       col += vec3(1.25, 0.62, 0.16) * meniscus * (0.45 + uEmit * 1.6);
+      vec2 rv = (vUv - vec2(0.5)) - uReflect;
+      float streak = exp(-pow(rv.x / 0.032, 2.0));
+      streak *= exp(-pow((rv.y + 0.055) / 0.075, 2.0));
+      streak *= smoothstep(0.18, 0.04, length(rv));
+      col += vec3(1.85, 0.92, 0.34) * streak * uEmit * 2.4;
     } else {
       col += vec3(1.05, 0.48, 0.1) * uEmit * 0.15;
     }
@@ -912,6 +919,48 @@ const pool = new THREE.Mesh(buildPool(R_TOP * 0.94), poolMat);
 pool.rotation.x = -Math.PI / 2;
 pool.position.y = TOP_Y - 0.02;
 scene.add(pool);
+
+const DUST_N = 12;
+const dustMotes = [];
+const dustPositions = new Float32Array(DUST_N * 3);
+const dustColors = new Float32Array(DUST_N * 3);
+function resetMote(mote, scatterY) {
+  const ang = Math.random() * Math.PI * 2;
+  const rad = 0.16 + Math.random() * 0.38;
+  mote.x = Math.cos(ang) * rad;
+  mote.z = Math.sin(ang) * rad;
+  mote.y = scatterY ? 0.18 + Math.random() * 1.45 : 0.14 + Math.random() * 0.08;
+  mote.speed = 0.04 + Math.random() * 0.045;
+  mote.phase = Math.random() * Math.PI * 2;
+  mote.gain = 0.35 + Math.random() * 0.65;
+}
+for (let i = 0; i < DUST_N; i++) {
+  const mote = {};
+  resetMote(mote, true);
+  dustMotes.push(mote);
+  dustPositions[i * 3] = mote.x;
+  dustPositions[i * 3 + 1] = mote.y;
+  dustPositions[i * 3 + 2] = mote.z;
+}
+const dustGeo = new THREE.BufferGeometry();
+dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPositions, 3));
+dustGeo.setAttribute('color', new THREE.BufferAttribute(dustColors, 3));
+const dust = new THREE.Points(
+  dustGeo,
+  new THREE.PointsMaterial({
+    map: makeRadial(),
+    size: 0.016,
+    vertexColors: true,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    sizeAttenuation: true,
+    toneMapped: false,
+  })
+);
+dust.renderOrder = 2;
+dust.visible = false;
+scene.add(dust);
 
 const wickCurve = new THREE.CatmullRomCurve3([
   new THREE.Vector3(0, TOP_Y - 0.012, 0),
@@ -1040,7 +1089,7 @@ function pose() {
   return { calm, energy, tip, sway, grow, width, intensity, flatten, lean, turb, wick, ember, light };
 }
 
-function applyPose(p) {
+function applyPose(p, dt) {
   flameUniforms.uTime.value = time;
   flameUniforms.uGrow.value = p.grow;
   flameUniforms.uWidth.value = p.width;
@@ -1096,6 +1145,34 @@ function applyPose(p) {
   const op = smokeKill ? Math.max(0, smokeUniforms.uOpacity.value - 0.05) : envIn;
   smokeUniforms.uOpacity.value = op;
   smokeMesh.visible = op > 0.01;
+
+  const gleam = p.light * (0.62 + 0.38 * clamp(p.energy, 0.7, 1.25));
+  poolMat.uniforms.uReflect.value.set(sx * 1.15 * gleam, sz * 0.45 * gleam);
+  const lit = p.light;
+  dust.visible = lit > 0.04;
+  const pace = (p.calm ? 0.22 : 1) * dt;
+  const pos = dustGeo.attributes.position;
+  const col = dustGeo.attributes.color;
+  for (let i = 0; i < DUST_N; i++) {
+    const mote = dustMotes[i];
+    mote.y += mote.speed * pace;
+    mote.x += Math.sin(time * 0.31 + mote.phase) * 0.012 * pace;
+    mote.z += Math.cos(time * 0.27 + mote.phase * 1.3) * 0.012 * pace;
+    if (mote.y > 1.82) resetMote(mote, false);
+    const radial = Math.hypot(mote.x, mote.z);
+    if (radial < 0.17 && mote.y < TOP_Y) {
+      const push = 0.17 / Math.max(radial, 0.001);
+      mote.x *= push;
+      mote.z *= push;
+    }
+    pos.setXYZ(i, mote.x, mote.y, mote.z);
+    const beam = smoothstep(0.72, 0.1, radial);
+    const band = smoothstep(0.16, 0.4, mote.y) * (1 - smoothstep(1.25, 1.78, mote.y));
+    const b = beam * band * lit * (0.45 + 0.55 * clamp(p.energy, 0.6, 1.3)) * mote.gain * 1.15;
+    col.setXYZ(i, b, b * 0.72, b * 0.38);
+  }
+  pos.needsUpdate = true;
+  col.needsUpdate = true;
 }
 
 function setState(next) {
@@ -1207,8 +1284,36 @@ updateUI();
 const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
 
+const chromeEls = [...document.querySelectorAll('.chrome')];
+let lastChromeInput = performance.now();
+let chromeQuiet = false;
+
+function setChromeQuiet(quiet) {
+  if (quiet === chromeQuiet) return;
+  chromeQuiet = quiet;
+  document.documentElement.dataset.chrome = quiet ? 'quiet' : 'awake';
+  for (const el of chromeEls) el.inert = quiet;
+  if (quiet && document.activeElement && document.activeElement.closest && document.activeElement.closest('.chrome')) {
+    document.activeElement.blur();
+  }
+}
+
+function revealChrome() {
+  lastChromeInput = performance.now();
+  setChromeQuiet(false);
+}
+
+function updateChrome() {
+  const settled = state === 'burning' && stateT > 2.8 && !els.note.textContent;
+  const idle = performance.now() - lastChromeInput > 3200;
+  setChromeQuiet(settled && idle);
+}
+
+revealChrome();
+
 renderer.domElement.addEventListener('pointerup', (e) => {
   if (e.pointerType === 'mouse' && e.button !== 0) return;
+  revealChrome();
   unlockAudio();
   const rect = renderer.domElement.getBoundingClientRect();
   ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -1222,6 +1327,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
 });
 
 renderer.domElement.addEventListener('pointermove', (e) => {
+  if (e.pointerType === 'mouse' || e.pointerType === 'pen') revealChrome();
   const rect = renderer.domElement.getBoundingClientRect();
   ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
   ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -1251,7 +1357,9 @@ els.blow.addEventListener('click', () => {
   else enableMic();
 });
 
+window.addEventListener('pointerdown', revealChrome);
 window.addEventListener('keydown', (e) => {
+  revealChrome();
   if (e.repeat) return;
   if (e.key !== 'Enter' && e.key !== ' ') return;
   if (e.target && e.target.closest && e.target.closest('button')) return;
@@ -1279,7 +1387,8 @@ function tick(now) {
   stepState(dt);
   sampleBlow(dt);
   const p = pose();
-  applyPose(p);
+  applyPose(p, dt);
+  updateChrome();
   if (state === 'burning' && audio.ctx && !audio.muted && time > audio.nextCrackle) {
     playCrackle();
     audio.nextCrackle = time + 0.09 + Math.random() * 0.26;
