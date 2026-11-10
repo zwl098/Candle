@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark" />
+  <title>生日烛火</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect fill='%23070605' width='32' height='32'/%3E%3Cpath fill='%23ffb15a' d='M16 4c2 4 3 6 3 8a3 3 0 1 1-6 0c0-2 1-4 3-8z'/%3E%3Crect fill='%23e6d3b0' x='14.2' y='16' width='3.6' height='12' rx='1.2'/%3E%3C/svg%3E" />
+  <script>(()=>{const q=[];let t=performance.now();const ch=new MessageChannel();let sched=false;function run(){sched=false;t+=16.7;const c=q.splice(0);for(const f of c){try{f(t)}catch(e){console.error(e)}}}ch.port1.onmessage=()=>setTimeout(run,0);window.requestAnimationFrame=(f)=>{q.push(f);if(!sched){sched=true;ch.port2.postMessage(0);}return q.length};window.cancelAnimationFrame=()=>{};})();</script>
+  <link rel="stylesheet" href="./src/style.css" />
+  <!-- 火焰与场景为原创实现。Three.js r170（MIT，见 vendor/THREE.LICENSE）；GSAP 3.15（GreenSock Standard License）；canvas-confetti 1.9（ISC，见 vendor/canvas-confetti/LICENSE） -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three.module.js",
+      "three/addons/": "./vendor/addons/",
+      "gsap": "./vendor/gsap/index.js",
+      "gsap/": "./vendor/gsap/",
+      "canvas-confetti": "./vendor/canvas-confetti/confetti.module.mjs"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="stage"></div>
+  <div class="vignette" aria-hidden="true"></div>
+  <div class="grain" aria-hidden="true"></div>
+  <canvas id="confetti" aria-hidden="true"></canvas>
+
+  <section id="celebrate" aria-live="polite">
+    <h1 class="wish-title">生日快乐</h1>
+    <div class="wish-sub">
+      <span class="wish-rule"></span>
+      <p class="wish-en">Happy Birthday</p>
+      <p class="wish-line">愿你所愿，皆得所愿</p>
+    </div>
+  </section>
+
+  <div id="curtain" aria-hidden="true"></div>
+
+  <header class="topbar chrome">
+    <div class="tools">
+      <button type="button" id="blow" aria-pressed="false">吹气熄灭</button>
+      <button type="button" id="mute" aria-pressed="false">静音</button>
+    </div>
+  </header>
+
+  <div class="bottom chrome">
+    <p id="greeting" aria-hidden="true">闭上眼睛，许一个愿望</p>
+    <p id="status" role="status">未燃</p>
+    <p id="hint">点击烛芯，或按 Enter / 空格</p>
+    <button type="button" id="action" aria-describedby="hint">点燃</button>
+    <p id="note" role="status"></p>
+  </div>
+
+  <p class="credit chrome">原创火焰体积着色器 · Three.js · GSAP · canvas-confetti</p>
+
+  <p id="fallback" hidden>需要 WebGL 才能渲染这根蜡烛。</p>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

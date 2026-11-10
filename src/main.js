@@ -3,24 +3,34 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { gsap } from 'gsap';
+import { SplitText } from 'gsap/SplitText.js';
+import confetti from 'canvas-confetti';
 
-const BASE_Y = 0.055;
-const CANDLE_H = 1.02;
+gsap.registerPlugin(SplitText);
+
+const CAKE_R = 0.5;
+const CAKE_TOP = 0.37;
+const BASE_Y = CAKE_TOP + 0.012;
+const CANDLE_H = 0.52;
 const TOP_Y = BASE_Y + CANDLE_H;
-const R_BOTTOM = 0.158;
-const R_TOP = 0.14;
-const FLAME_H = 0.46;
+const R_BOTTOM = 0.034;
+const R_TOP = 0.029;
+const FLAME_H = 0.26;
 const IGNITE_DUR = 0.72;
 const EXTING_DUR = 1.02;
 const EMBER_DUR = 2.7;
 const SMOKE_DUR = 2.75;
 
 const UI = {
-  unlit: { status: '未燃', button: '点燃', disabled: false, hint: '点击烛芯，或按 Enter / 空格' },
+  unlit: { status: '未燃', button: '点燃蜡烛', disabled: false, hint: '点击烛芯，或按 Enter / 空格' },
   igniting: { status: '点燃中', button: '点燃中', disabled: true, hint: '火苗正从烛芯升起' },
-  burning: { status: '燃烧中', button: '熄灭', disabled: false, hint: '点击火焰，或按 Enter / 空格' },
-  extinguishing: { status: '熄灭中', button: '熄灭中', disabled: true, hint: '火苗侧倒，随后散成烟' },
-  ember: { status: '余烬', button: '点燃', disabled: false, hint: '烛芯还有余热，可再次点燃' },
+  burning: { status: '燃烧中', button: '吹灭蜡烛', disabled: false, hint: '许完愿，点击火焰或按空格吹灭' },
+  extinguishing: { status: '愿望已许下', button: '吹灭中', disabled: true, hint: '火苗侧倒，随后散成烟' },
+  ember: { status: '余烬', button: '再点一次', disabled: false, hint: '烛芯还有余热，可再次点燃' },
 };
 
 const els = {
@@ -45,7 +55,7 @@ let smokeT = -1;
 let smokeKill = false;
 let smokeLean = 0.12;
 
-const audio = { ctx: null, master: null, noise: null, muted: false, nextCrackle: 0 };
+const audio = { ctx: null, master: null, noise: null, music: null, voices: [], muted: false, nextCrackle: 0 };
 const mic = {
   on: false,
   stream: null,
@@ -87,7 +97,7 @@ function updateUI() {
   els.action.disabled = ui.disabled;
   els.action.dataset.state = state;
   let hint = ui.hint;
-  if (mic.on && state === 'burning') hint = '点击火焰、按空格，或对着麦克风吹气';
+  if (mic.on && state === 'burning') hint = '许完愿，对着麦克风吹一口气';
   els.hint.textContent = hint;
   document.documentElement.dataset.state = state;
   document.documentElement.dataset.motion = reduceMotion ? 'reduce' : 'full';
@@ -153,6 +163,97 @@ function playIgnite() {
 
 function playExtinguish() {
   noiseBurst({ dur: 0.32, type: 'lowpass', freq: 1600, freqEnd: 180, q: 0.5, gain: 0.09 });
+}
+
+const MELODY = [
+  ['G4', 0.75], ['G4', 0.25], ['A4', 1], ['G4', 1], ['C5', 1], ['B4', 2],
+  ['G4', 0.75], ['G4', 0.25], ['A4', 1], ['G4', 1], ['D5', 1], ['C5', 2],
+  ['G4', 0.75], ['G4', 0.25], ['G5', 1], ['E5', 1], ['C5', 1], ['B4', 1], ['A4', 2],
+  ['F5', 0.75], ['F5', 0.25], ['E5', 1], ['C5', 1], ['D5', 1], ['C5', 3],
+];
+const NOTE_SEMI = { C: -9, D: -7, E: -5, F: -4, G: -2, A: 0, B: 2 };
+
+function noteFreq(name) {
+  const semi = NOTE_SEMI[name[0]] + (Number(name[1]) - 4) * 12;
+  return 440 * 2 ** (semi / 12);
+}
+
+function musicBus() {
+  if (audio.music) return audio.music;
+  const ctx = audio.ctx;
+  const bus = ctx.createGain();
+  const delay = ctx.createDelay(1);
+  const feedback = ctx.createGain();
+  const tail = ctx.createBiquadFilter();
+  delay.delayTime.value = 0.23;
+  feedback.gain.value = 0.32;
+  tail.type = 'lowpass';
+  tail.frequency.value = 2600;
+  bus.connect(audio.master);
+  bus.connect(delay);
+  delay.connect(tail);
+  tail.connect(feedback);
+  feedback.connect(delay);
+  tail.connect(audio.master);
+  audio.music = bus;
+  return bus;
+}
+
+function chime(freq, at, gain, out) {
+  const ctx = audio.ctx;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, at);
+  g.gain.exponentialRampToValueAtTime(gain, at + 0.006);
+  g.gain.exponentialRampToValueAtTime(0.0006, at + 1.5);
+  g.connect(out);
+  for (const [mul, amp] of [[1, 1], [2.01, 0.32], [4.03, 0.1]]) {
+    const osc = ctx.createOscillator();
+    const og = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq * mul;
+    og.gain.value = amp;
+    osc.connect(og);
+    og.connect(g);
+    osc.start(at);
+    osc.stop(at + 1.55);
+    audio.voices.push(osc);
+  }
+}
+
+function playMelody() {
+  if (!audio.ctx || audio.muted) return;
+  stopMelody();
+  const bus = musicBus();
+  bus.gain.cancelScheduledValues(audio.ctx.currentTime);
+  bus.gain.setValueAtTime(0.55, audio.ctx.currentTime);
+  const beat = 0.44;
+  let at = audio.ctx.currentTime + 0.25;
+  for (const [name, beats] of MELODY) {
+    chime(noteFreq(name), at, 0.16, bus);
+    at += beats * beat;
+  }
+}
+
+function stopMelody() {
+  if (!audio.ctx || !audio.music) return;
+  const now = audio.ctx.currentTime;
+  audio.music.gain.cancelScheduledValues(now);
+  audio.music.gain.setValueAtTime(audio.music.gain.value, now);
+  audio.music.gain.linearRampToValueAtTime(0, now + 0.35);
+  for (const osc of audio.voices) {
+    try { osc.stop(now + 0.4); } catch {}
+  }
+  audio.voices = [];
+}
+
+function playCelebrate() {
+  if (!audio.ctx || audio.muted) return;
+  noiseBurst({ dur: 0.18, type: 'bandpass', freq: 2400, freqEnd: 900, q: 0.7, gain: 0.12 });
+  const bus = musicBus();
+  const now = audio.ctx.currentTime;
+  bus.gain.cancelScheduledValues(now);
+  bus.gain.setValueAtTime(0.55, now);
+  ['C6', 'E6', 'G6', 'C7'].forEach((n, i) => chime(noteFreq(n), now + 0.08 + i * 0.075, 0.09, bus));
 }
 
 function playCrackle() {
@@ -331,10 +432,10 @@ const flameMat = new THREE.ShaderMaterial({
     varying vec3 vObj;
 
     float profile(float t) {
-      float s = sin(pow(clamp(t, 0.0, 1.0), 0.55) * 3.14159265);
-      float r = 0.086 * pow(max(s, 0.0), 0.66);
-      r *= smoothstep(0.0, 0.045, t);
-      r *= smoothstep(1.0, 0.64, t);
+      float s = sin(pow(clamp(t, 0.0, 1.0), 0.62) * 3.14159265);
+      float r = 0.046 * pow(max(s, 0.0), 0.72);
+      r *= smoothstep(0.0, 0.055, t);
+      r *= smoothstep(1.0, 0.7, t);
       return r;
     }
 
@@ -363,47 +464,48 @@ const flameMat = new THREE.ShaderMaterial({
       float yn2 = yn * yn;
       vec2 sway = uSway * yn2;
       float tipW = turb * yn2;
-      float wob = vnoise(vec3(uTime * 1.63 * motion, yn * 2.4, 2.2)) - 0.5;
-      float wob2 = vnoise(vec3(5.1, uTime * 2.21 * motion, yn * 1.7)) - 0.5;
-      float x = (p.x - sway.x - uLean * yn - wob * 0.08 * tipW) / max(width, 0.05);
-      float z = (p.z - sway.y - wob2 * 0.038 * tipW) / max(width, 0.05);
+      float wob = vnoise(vec3(uTime * 1.35 * motion, yn * 2.1, 2.2)) - 0.5;
+      float wob2 = vnoise(vec3(5.1, uTime * 1.78 * motion, yn * 1.55)) - 0.5;
+      float x = (p.x - sway.x - uLean * yn - wob * 0.055 * tipW) / max(width, 0.05);
+      float z = (p.z - sway.y - wob2 * 0.03 * tipW) / max(width, 0.05);
       float r = length(vec2(x, z));
 
-      vec3 npos = vec3(x * 3.1, yn * 2.15 - uTime * 0.95 * motion, z * 3.1);
+      vec3 npos = vec3(x * 2.7, yn * 1.95 - uTime * 0.72 * motion, z * 2.7);
       float warp = vnoise(npos);
-      float n = fbm(npos * 1.65 + vec3(warp * 0.85, -uTime * 0.28 * motion, 1.3));
+      float n = fbm(npos * 1.45 + vec3(warp * 0.65, -uTime * 0.22 * motion, 1.3));
       float pr = profile(clamp(yn, 0.0, 1.0));
-      float prJ = pr * (1.0 + (n - 0.5) * 0.58 * turb * smoothstep(0.18, 1.0, yn));
+      float prJ = pr * (1.0 + (n - 0.5) * 0.38 * turb * smoothstep(0.22, 1.0, yn));
       float d = r / max(prJ, 0.0015);
 
-      float shell = smoothstep(1.02, 0.45, d);
-      shell *= smoothstep(1.06, 0.72, yn);
-      shell *= smoothstep(-0.02, 0.03, yn);
+      float shell = smoothstep(1.12, 0.38, d);
+      shell *= smoothstep(1.05, 0.78, yn);
+      shell *= smoothstep(-0.02, 0.04, yn);
       if (shell < 0.001) return;
 
-      float streaks = fbm(vec3(x * 3.4, yn * 5.5 - uTime * 1.7 * motion, z * 3.4));
-      float body = smoothstep(0.82, 0.05, d);
-      float core = smoothstep(0.46, 0.0, d);
+      float streaks = fbm(vec3(x * 2.8, yn * 4.4 - uTime * 1.25 * motion, z * 2.8));
+      float body = smoothstep(0.92, 0.08, d);
+      float core = smoothstep(0.52, 0.0, d);
+      float softHalo = smoothstep(1.1, 0.7, d) * (1.0 - body * 0.7);
 
-      vec3 cRed = vec3(1.15, 0.07, 0.0);
-      vec3 cOra = vec3(2.4, 0.48, 0.03);
-      vec3 cYel = vec3(3.1, 1.45, 0.32);
-      vec3 cWht = vec3(5.2, 3.6, 1.55);
-      vec3 cBlu = vec3(0.42, 0.58, 0.95);
+      vec3 cAmber = vec3(1.15, 0.5, 0.16);
+      vec3 cHoney = vec3(1.75, 1.05, 0.45);
+      vec3 cCream = vec3(2.45, 1.9, 1.15);
+      vec3 cCore = vec3(2.95, 2.55, 1.95);
+      vec3 cBlue = vec3(0.55, 0.72, 1.05);
 
-      vec3 col = cRed;
-      col = mix(col, cOra, smoothstep(0.12, 0.55, body));
-      col = mix(col, cYel, smoothstep(0.35, 0.88, body) * smoothstep(0.04, 0.22, yn));
-      col = mix(col, cWht, core * smoothstep(0.08, 0.28, yn) * smoothstep(0.82, 0.38, yn));
-      col *= mix(0.8, 1.15, streaks);
+      vec3 col = cAmber;
+      col = mix(col, cHoney, smoothstep(0.08, 0.62, body) * smoothstep(0.02, 0.18, yn));
+      col = mix(col, cCream, smoothstep(0.28, 0.9, body) * smoothstep(0.06, 0.32, yn));
+      col = mix(col, cCore, core * smoothstep(0.1, 0.34, yn) * smoothstep(0.78, 0.42, yn));
+      col *= mix(0.92, 1.06, streaks);
 
-      float blueRing = smoothstep(0.28, 0.55, d) * smoothstep(0.92, 0.6, d);
-      float blueH = smoothstep(0.11, 0.0, yn);
-      col = mix(col, cBlu, blueRing * blueH * 0.42);
+      float blueRing = smoothstep(0.32, 0.58, d) * smoothstep(0.9, 0.62, d);
+      float blueH = smoothstep(0.085, 0.0, yn);
+      col = mix(col, cBlue, blueRing * blueH * 0.16);
 
-      float pocket = smoothstep(0.016, 0.004, length(p.xz)) * smoothstep(0.09, 0.0, p.y);
-      float densOut = shell * mix(0.62, 1.0, streaks);
-      densOut *= 1.0 - pocket * 0.82;
+      float pocket = smoothstep(0.014, 0.003, length(p.xz)) * smoothstep(0.08, 0.0, p.y);
+      float densOut = shell * mix(0.58, 0.95, streaks) + softHalo * 0.12;
+      densOut *= 1.0 - pocket * 0.75;
       densOut *= uIntensity;
       color = col;
       dens = densOut;
@@ -427,14 +529,14 @@ const flameMat = new THREE.ShaderMaterial({
         vec3 col;
         float dens;
         sampleFlame(p, col, dens);
-        float absorb = dens * 11.0;
+        float absorb = dens * 8.2;
         float tr = exp(-absorb * dt);
-        acc += col * dens * dt * 7.5 * transmit;
+        acc += col * dens * dt * 5.4 * transmit;
         transmit *= tr;
         t += dt;
       }
-      acc *= uEnergy;
-      acc = min(acc, vec3(7.0));
+      acc *= mix(0.92, 1.08, clamp(uEnergy, 0.7, 1.3));
+      acc = min(acc, vec3(3.6));
       if (dot(acc, vec3(0.299, 0.587, 0.114)) < 0.004) discard;
       gl_FragColor = vec4(acc, 1.0);
     }
@@ -529,67 +631,44 @@ const smokeMat = new THREE.ShaderMaterial({
   `,
 });
 
-function makeWoodTexture() {
-  const w = 512;
-  const h = 512;
+function canvasTexture(draw, w, h) {
   const c = document.createElement('canvas');
   c.width = w;
   c.height = h;
-  const g = c.getContext('2d');
-  g.fillStyle = '#3a2b20';
-  g.fillRect(0, 0, w, h);
-  const planks = 5;
-  for (let i = 0; i < planks; i++) {
-    const y = (i / planks) * h;
-    const ph = h / planks;
-    g.fillStyle = i % 2 === 0 ? '#4a3828' : '#3d2e22';
-    g.fillRect(0, y + 1, w, ph - 2);
-    for (let k = 0; k < 16; k++) {
-      g.strokeStyle = `rgba(40, 22, 10, ${0.05 + Math.random() * 0.07})`;
-      g.lineWidth = 1;
-      g.beginPath();
-      let x = 0;
-      let yy = y + 6 + Math.random() * (ph - 12);
-      g.moveTo(0, yy);
-      while (x < w) {
-        x += 16 + Math.random() * 24;
-        yy += (Math.random() - 0.5) * 2.5;
-        g.lineTo(x, yy);
-      }
-      g.stroke();
-    }
-  }
+  draw(c.getContext('2d'), w, h);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(2.4, 2.4);
   tex.anisotropy = 8;
   return tex;
 }
 
-function makeWaxTexture() {
-  const w = 256;
-  const h = 512;
-  const c = document.createElement('canvas');
-  c.width = w;
-  c.height = h;
-  const g = c.getContext('2d');
-  g.fillStyle = '#f6e7cc';
-  g.fillRect(0, 0, w, h);
-  for (let i = 0; i < 18; i++) {
-    g.fillStyle = `rgba(150, 110, 70, ${0.025 + Math.random() * 0.02})`;
-    g.fillRect(Math.random() * w, 0, 1 + Math.random() * 2, h);
-  }
-  const wash = g.createLinearGradient(0, 0, 0, h);
-  wash.addColorStop(0, 'rgba(255, 196, 130, 0.22)');
-  wash.addColorStop(0.22, 'rgba(255, 228, 190, 0.05)');
-  wash.addColorStop(1, 'rgba(80, 52, 28, 0.16)');
-  g.fillStyle = wash;
-  g.fillRect(0, 0, w, h);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
+function makeFrostBump() {
+  const tex = canvasTexture((g, w, h) => {
+    g.fillStyle = '#808080';
+    g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 170; i++) {
+      const x = Math.random() * w;
+      const sw = 2 + Math.random() * 9;
+      const light = Math.random() < 0.5;
+      const grad = g.createLinearGradient(x - sw, 0, x + sw, 0);
+      grad.addColorStop(0, 'rgba(128,128,128,0)');
+      grad.addColorStop(0.5, light ? 'rgba(255,255,255,0.34)' : 'rgba(0,0,0,0.34)');
+      grad.addColorStop(1, 'rgba(128,128,128,0)');
+      g.fillStyle = grad;
+      g.fillRect(x - sw, Math.random() * h * 0.2, sw * 2, h * (0.6 + Math.random() * 0.4));
+    }
+    const img = g.getImageData(0, 0, w, h);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const n = (Math.random() - 0.5) * 14;
+      img.data[i] += n;
+      img.data[i + 1] += n;
+      img.data[i + 2] += n;
+    }
+    g.putImageData(img, 0, 0);
+  }, 512, 256);
+  tex.colorSpace = THREE.NoColorSpace;
   tex.wrapS = THREE.RepeatWrapping;
-  tex.anisotropy = 8;
+  tex.repeat.set(3, 1);
   return tex;
 }
 
@@ -620,37 +699,15 @@ function makeRadial() {
 
 function buildCandleGeometry() {
   const pts = [new THREE.Vector2(0.001, 0)];
-  const n = 36;
+  const n = 32;
   for (let i = 0; i <= n; i++) {
     const t = i / n;
     const y = t * CANDLE_H;
     let r = lerp(R_BOTTOM, R_TOP, t);
-    r += Math.sin(t * Math.PI) * 0.0035;
-    r += Math.sin(t * 46 + 1.4) * 0.0011;
-    pts.push(new THREE.Vector2(Math.max(r, 0.01), y));
+    r += Math.sin(t * Math.PI) * 0.0007;
+    pts.push(new THREE.Vector2(Math.max(r, 0.008), y));
   }
-  const geo = new THREE.LatheGeometry(pts, 72);
-  const pos = geo.attributes.position;
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i);
-    const y = pos.getY(i);
-    const z = pos.getZ(i);
-    const rad = Math.hypot(x, z);
-    if (rad < 0.01) continue;
-    const ang = Math.atan2(z, x);
-    const nrm = Math.sin(y * 18 + ang * 4) * 0.0014;
-    const lobe = (center) => {
-      let dA = Math.abs(ang - center);
-      if (dA > Math.PI) dA = Math.PI * 2 - dA;
-      const angW = Math.exp(-dA * dA * 26);
-      const along = (CANDLE_H - 0.012 - y) / 0.18;
-      if (along <= 0 || along >= 1) return 0;
-      return Math.sin(along * Math.PI) ** 0.75 * angW;
-    };
-    const drip = lobe(1.05) * 0.018 + lobe(1.85) * 0.011;
-    const s = (rad + nrm + drip) / rad;
-    pos.setXYZ(i, x * s, y - drip * 0.55, z * s);
-  }
+  const geo = new THREE.LatheGeometry(pts, 48);
   geo.computeVertexNormals();
   return geo;
 }
@@ -662,8 +719,8 @@ function buildPool(radius) {
     const x = pos.getX(i);
     const y = pos.getY(i);
     const d = Math.min(1, Math.hypot(x, y) / radius);
-    const dip = -(1 - d ** 0.48) * 0.058;
-    const lip = smoothstep(0.84, 1, d) * 0.014;
+    const dip = -(1 - d ** 0.55) * Math.min(0.008, radius * 0.2);
+    const lip = smoothstep(0.84, 1, d) * 0.002;
     pos.setZ(i, dip + lip);
   }
   geo.computeVertexNormals();
@@ -673,7 +730,7 @@ function buildPool(radius) {
 let renderer;
 try {
   renderer = new THREE.WebGLRenderer({
-    antialias: true,
+    antialias: false,
     alpha: false,
     powerPreference: 'high-performance',
   });
@@ -693,70 +750,74 @@ renderer.debug.onShaderError = (gl, program, _vs, fs) => {
   setNote('着色器编译失败');
 };
 
-renderer.setClearColor(0x070605, 1);
+const ROOM_BG = 0x0a0807;
+const AMBIENT_TINT = new THREE.Color('#ffe3c6');
+
+renderer.setClearColor(ROOM_BG, 1);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMapping = THREE.AgXToneMapping;
 renderer.toneMappingExposure = 1.02;
-renderer.shadowMap.enabled = false;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.autoUpdate = false;
+let shadowsLive = true;
+let shadowEvery = 2;
+let shadowTick = 0;
 els.stage.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x070605);
+scene.background = new THREE.Color(ROOM_BG);
 const camera = new THREE.PerspectiveCamera(30, 1, 0.05, 30);
 
-const hemi = new THREE.HemisphereLight(0x3a342c, 0x070605, 0.11);
+scene.fog = new THREE.Fog(ROOM_BG, 5.4, 9.2);
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.28;
+
+const hemi = new THREE.HemisphereLight(0xffe0c2, 0x2a170d, 0.12);
 scene.add(hemi);
 
-const keyLight = new THREE.PointLight(0xff9444, 0, 0, 2);
-keyLight.color.set('#ff9444');
+const garlandLight = new THREE.PointLight(0xffc896, 0, 0, 1.6);
+garlandLight.position.set(-0.75, 1.0, -1.25);
+scene.add(garlandLight);
+
+const keyLight = new THREE.PointLight(0xffb070, 0, 5.2, 1.85);
+keyLight.color.set('#ffb070');
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(512, 512);
+keyLight.shadow.camera.near = 0.03;
+keyLight.shadow.camera.far = 3.5;
+keyLight.shadow.bias = -0.0006;
+keyLight.shadow.normalBias = 0.01;
+keyLight.shadow.radius = 5;
 scene.add(keyLight);
-const fillLight = new THREE.PointLight(0xff7a32, 0, 0, 2);
-fillLight.color.set('#ff7a32');
+const fillLight = new THREE.PointLight(0xffc08a, 0, 2.6, 2);
+fillLight.color.set('#ffc08a');
 scene.add(fillLight);
 const emberLight = new THREE.PointLight(0xff2a0e, 0, 0.38, 2);
 emberLight.color.set('#ff2a0e');
 scene.add(emberLight);
 
-const wood = makeWoodTexture();
 const floor = new THREE.Mesh(
-  new THREE.CircleGeometry(7.5, 64),
-  new THREE.MeshStandardMaterial({ map: wood, color: 0xffffff, roughness: 0.9, metalness: 0 })
+  new THREE.CircleGeometry(6, 96),
+  new THREE.MeshStandardMaterial({
+    color: 0x080605,
+    roughness: 0.4,
+    metalness: 0,
+    envMapIntensity: 0.05,
+  })
 );
 floor.rotation.x = -Math.PI / 2;
-floor.position.y = 0;
+floor.receiveShadow = true;
 scene.add(floor);
-
-const wallMat = new THREE.MeshStandardMaterial({ color: 0x14110f, roughness: 1, metalness: 0 });
-const backWall = new THREE.Mesh(new THREE.PlaneGeometry(9, 5.2), wallMat);
-backWall.position.set(0, 2.4, -2.15);
-scene.add(backWall);
-const sideWall = new THREE.Mesh(new THREE.PlaneGeometry(8, 5.2), wallMat);
-sideWall.position.set(-2.15, 2.4, 0.2);
-sideWall.rotation.y = Math.PI / 2;
-scene.add(sideWall);
-
-const holderMat = new THREE.MeshPhysicalMaterial({
-  color: 0x3a291c,
-  roughness: 0.58,
-  metalness: 0.08,
-  clearcoat: 0.08,
-  clearcoatRoughness: 0.6,
-});
-const plate = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.27, 0.02, 48), holderMat);
-plate.position.y = 0.012;
-scene.add(plate);
-const plateTop = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.22, 0.016, 48), holderMat);
-plateTop.position.y = 0.028;
-scene.add(plateTop);
 
 const contactTex = makeRadial();
 const contact = new THREE.Mesh(
-  new THREE.CircleGeometry(0.42, 48),
+  new THREE.CircleGeometry(1.0, 48),
   new THREE.MeshBasicMaterial({
     map: contactTex,
     color: 0x000000,
     transparent: true,
-    opacity: 0.42,
+    opacity: 0.55,
     depthWrite: false,
   })
 );
@@ -766,10 +827,10 @@ contact.renderOrder = 1;
 scene.add(contact);
 
 const poolLight = new THREE.Mesh(
-  new THREE.CircleGeometry(1.55, 64),
+  new THREE.CircleGeometry(1.8, 64),
   new THREE.MeshBasicMaterial({
     map: contactTex,
-    color: 0xff8a3c,
+    color: 0xffc896,
     transparent: true,
     opacity: 0,
     depthWrite: false,
@@ -792,10 +853,12 @@ const waxUniforms = {
   uEmberPos: { value: new THREE.Vector3() },
   uEmberIntensity: { value: 0 },
   uAmbient: { value: 0.1 },
+  uAmbientColor: { value: AMBIENT_TINT },
   uEmit: { value: 0 },
   uSpec: { value: 0.18 },
   uTopY: { value: TOP_Y },
   uReflect: { value: new THREE.Vector2() },
+  uStripes: { value: 0 },
 };
 
 const waxVert = /* glsl */ `
@@ -821,10 +884,12 @@ const waxFrag = /* glsl */ `
   uniform vec3 uEmberPos;
   uniform float uEmberIntensity;
   uniform float uAmbient;
+  uniform vec3 uAmbientColor;
   uniform float uEmit;
   uniform float uSpec;
   uniform float uTopY;
   uniform vec2 uReflect;
+  uniform float uStripes;
   varying vec3 vWorld;
   varying vec3 vNormal;
   varying vec2 vUv;
@@ -837,8 +902,15 @@ const waxFrag = /* glsl */ `
       tex = pow(max(tex, vec3(0.0)), vec3(2.2));
       albedo *= tex;
     }
-    float heat = smoothstep(uTopY - 0.42, uTopY - 0.02, vWorld.y);
-    albedo = mix(albedo, albedo * vec3(1.12, 0.78, 0.42), heat * 0.55);
+    if (uStripes > 0.5) {
+      float s = fract(vUv.x + vUv.y * 4.6);
+      vec3 dye = vec3(1.0, 0.96, 0.9);
+      float line = smoothstep(0.0, 0.015, s) * (1.0 - smoothstep(0.1, 0.125, s));
+      dye = mix(dye, vec3(0.93, 0.74, 0.44), line * 0.8);
+      albedo *= pow(max(dye, vec3(0.0)), vec3(2.2));
+    }
+    float heat = smoothstep(uTopY - 0.1, uTopY - 0.008, vWorld.y);
+    albedo = mix(albedo, albedo * vec3(1.04, 0.9, 0.72), heat * 0.22);
 
     vec3 Lvec = uLightPos - vWorld;
     float dist = length(Lvec);
@@ -858,8 +930,11 @@ const waxFrag = /* glsl */ `
       albedo = mix(deep, molten, smoothstep(0.0, 0.5, poolRd));
       albedo = mix(albedo, lipCol, smoothstep(0.58, 0.96, poolRd));
     }
-    vec3 col = albedo * (uAmbient + wrap * atten * uLightColor);
-    col += vec3(1.0, 0.46, 0.12) * rim * heat * atten * 0.16;
+    float sky = 0.65 + 0.35 * N.y;
+  vec3 lightC = mix(uLightColor, vec3(1.0, 0.88, 0.7), 0.55);
+    vec3 col = albedo * (uAmbient * sky * uAmbientColor + wrap * atten * lightC);
+    col += vec3(1.0, 0.62, 0.28) * rim * heat * atten * 0.1;
+    col += albedo * uAmbientColor * rim * uAmbient * 1.4;
     col += uLightColor * spec * atten * uSpec * mix(1.0, smoothstep(0.45, 0.92, poolRd), step(0.4, uSpec));
     if (uSpec > 0.4) {
       float well = 1.0 - smoothstep(0.0, 0.62, poolRd);
@@ -872,7 +947,7 @@ const waxFrag = /* glsl */ `
       streak *= smoothstep(0.18, 0.04, length(rv));
       col += vec3(1.85, 0.92, 0.34) * streak * uEmit * 2.4;
     } else {
-      col += vec3(1.05, 0.48, 0.1) * uEmit * 0.15;
+      col += vec3(1.0, 0.7, 0.35) * uEmit * 0.1;
     }
 
     vec3 Evec = uEmberPos - vWorld;
@@ -884,13 +959,16 @@ const waxFrag = /* glsl */ `
   }
 `;
 
-function makeWaxMaterial({ map = null, color = '#ecd7b4', spec = 0.16, emit = 0 } = {}) {
+const waxMaterials = [];
+
+function makeWaxMaterial({ map = null, color = '#ecd7b4', spec = 0.16, emit = 0, stripes = false } = {}) {
   const uniforms = THREE.UniformsUtils.clone(waxUniforms);
   uniforms.uMap.value = map;
   uniforms.uHasMap.value = map ? 1 : 0;
   uniforms.uColor.value = new THREE.Color(color);
   uniforms.uSpec.value = spec;
   uniforms.uEmit.value = emit;
+  uniforms.uStripes.value = stripes ? 1 : 0;
   const mat = new THREE.ShaderMaterial({
     uniforms,
     vertexShader: waxVert,
@@ -898,29 +976,243 @@ function makeWaxMaterial({ map = null, color = '#ecd7b4', spec = 0.16, emit = 0 
     toneMapped: false,
   });
   mat.userData.wax = true;
+  waxMaterials.push(mat);
   return mat;
 }
 
-const waxMap = makeWaxTexture();
-const waxMat = makeWaxMaterial({ map: waxMap, color: '#ffffff', spec: 0.14 });
-const waxSolid = makeWaxMaterial({ color: '#f0d8b4', spec: 0.12 });
-const poolMat = makeWaxMaterial({ color: '#c9843a', spec: 0.42, emit: 0 });
-const waxMaterials = [waxMat, waxSolid, poolMat];
+const waxMat = makeWaxMaterial({ color: '#ffffff', spec: 0.1, stripes: true });
+const waxSolid = makeWaxMaterial({ color: '#fff1df', spec: 0.1 });
+const poolMat = makeWaxMaterial({ color: '#ffe1b8', spec: 0.2, emit: 0 });
+
+const PLATE_TOP = 0.028;
+const GANACHE = new THREE.Color('#2a120b');
+
+const plateMat = new THREE.MeshPhysicalMaterial({
+  color: 0xf3ede4,
+  roughness: 0.2,
+  clearcoat: 0.7,
+  clearcoatRoughness: 0.14,
+});
+const goldMat = new THREE.MeshPhysicalMaterial({ color: 0xe3b862, metalness: 1, roughness: 0.26 });
+const creamMat = new THREE.MeshPhysicalMaterial({
+  color: 0xf2dcbc,
+  roughness: 0.6,
+  sheen: 0.9,
+  sheenRoughness: 0.4,
+  sheenColor: new THREE.Color('#ffd7a8'),
+  bumpMap: makeFrostBump(),
+  bumpScale: 0.9,
+});
+const ganacheMat = new THREE.MeshPhysicalMaterial({
+  color: GANACHE,
+  roughness: 0.2,
+  clearcoat: 1,
+  clearcoatRoughness: 0.07,
+});
+const berryMat = new THREE.MeshPhysicalMaterial({
+  color: 0x9a1230,
+  roughness: 0.4,
+  clearcoat: 0.55,
+  clearcoatRoughness: 0.3,
+  sheen: 0.5,
+  sheenColor: new THREE.Color('#ff7090'),
+});
+const leafMat = new THREE.MeshPhysicalMaterial({ color: 0x2e6a3d, roughness: 0.45, sheen: 0.5, sheenColor: new THREE.Color('#9bd68a') });
+const pearlMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  roughness: 0.2,
+  metalness: 0.12,
+  clearcoat: 1,
+  clearcoatRoughness: 0.1,
+});
+
+function shadowed(mesh, cast = true) {
+  mesh.castShadow = cast;
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+  return mesh;
+}
+
+const platePts = [
+  [0.001, 0], [0.44, 0], [0.5, 0.006], [0.72, 0.022], [0.8, 0.038], [0.806, 0.046],
+  [0.79, 0.051], [0.74, 0.04], [0.62, PLATE_TOP], [0.001, PLATE_TOP],
+].map(([r, y]) => new THREE.Vector2(r, y));
+shadowed(new THREE.Mesh(new THREE.LatheGeometry(platePts, 128), plateMat), false);
+
+const plateRim = new THREE.Mesh(new THREE.TorusGeometry(0.792, 0.0042, 10, 160), goldMat);
+plateRim.rotation.x = Math.PI / 2;
+plateRim.position.y = 0.047;
+scene.add(plateRim);
+
+const cakeH = CAKE_TOP - PLATE_TOP;
+const cakeBody = new THREE.Mesh(new THREE.CylinderGeometry(CAKE_R, CAKE_R * 1.004, cakeH, 128, 1), creamMat);
+cakeBody.position.y = PLATE_TOP + cakeH / 2;
+shadowed(cakeBody);
+
+const goldBand = new THREE.Mesh(new THREE.TorusGeometry(CAKE_R + 0.002, 0.0036, 10, 160), goldMat);
+goldBand.rotation.x = Math.PI / 2;
+goldBand.position.y = 0.19;
+scene.add(goldBand);
+
+const PEARLS = 58;
+const pearls = new THREE.InstancedMesh(new THREE.SphereGeometry(0.0125, 20, 14), pearlMat, PEARLS);
+{
+  const dummy = new THREE.Object3D();
+  const pc = new THREE.Color();
+  for (let i = 0; i < PEARLS; i++) {
+    const ang = (i / PEARLS) * Math.PI * 2;
+    dummy.position.set(Math.cos(ang) * (CAKE_R + 0.016), PLATE_TOP + 0.0125, Math.sin(ang) * (CAKE_R + 0.016));
+    dummy.updateMatrix();
+    pearls.setMatrixAt(i, dummy.matrix);
+    pc.set(i % 4 === 0 ? '#e8bd62' : '#fff2e0');
+    pearls.setColorAt(i, pc);
+  }
+}
+shadowed(pearls);
+
+const capPts = [
+  [CAKE_R + 0.003, -0.004], [CAKE_R + 0.003, 0.003], [CAKE_R - 0.002, 0.0095], [CAKE_R - 0.016, 0.0112],
+  [0.4, 0.0125], [0.3, 0.0148], [0.18, 0.0168], [0.08, 0.0178], [0.001, 0.018],
+].map(([r, y]) => new THREE.Vector2(r, y));
+const ganacheCap = new THREE.Mesh(new THREE.LatheGeometry(capPts, 128), ganacheMat);
+ganacheCap.position.y = CAKE_TOP;
+shadowed(ganacheCap, false);
+
+function domeY(r) {
+  const t = clamp(r / CAKE_R, 0, 1);
+  return lerp(0.018, 0.0112, smoothstep(0, 0.9, t));
+}
+
+const dripSpecs = [];
+for (let i = 0; i < 11; i++) {
+  dripSpecs.push({
+    a: (i / 11) * Math.PI * 2 + (hash1(i * 5.3) - 0.5) * 0.35,
+    w: 0.075 + hash1(i * 2.9 + 1) * 0.05,
+    L: 0.045 + hash1(i * 7.7 + 3) ** 1.4 * 0.17,
+  });
+}
+
+function dripLength(ang) {
+  let len = 0.02 + 0.008 * Math.sin(ang * 3 + 1) + 0.005 * Math.sin(ang * 7);
+  for (const d of dripSpecs) {
+    let da = Math.abs(ang - d.a);
+    if (da > Math.PI) da = Math.PI * 2 - da;
+    if (da < d.w) len = Math.max(len, d.L * Math.sqrt(1 - (da / d.w) ** 2));
+  }
+  return len;
+}
+
+function buildDripSkirt(radius, topY) {
+  const SEG = 360;
+  const RINGS = [0, 0.22, 0.5, 0.78, 1];
+  const BULGE = [0.0075, 0.0062, 0.0058, 0.0068, 0.0036];
+  const R = RINGS.length;
+  const pos = [];
+  for (let i = 0; i < SEG; i++) {
+    const ang = (i / SEG) * Math.PI * 2;
+    const len = dripLength(ang);
+    for (let j = 0; j < R; j++) {
+      const r = radius + BULGE[j];
+      pos.push(Math.cos(ang) * r, topY - len * RINGS[j], Math.sin(ang) * r);
+    }
+  }
+  const idx = [];
+  for (let i = 0; i < SEG; i++) {
+    const n = (i + 1) % SEG;
+    for (let j = 0; j < R - 1; j++) {
+      const a = i * R + j;
+      const b = a + 1;
+      const c = n * R + j;
+      const d = c + 1;
+      idx.push(a, b, c, b, d, c);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const skirtMat = ganacheMat.clone();
+skirtMat.side = THREE.DoubleSide;
+shadowed(new THREE.Mesh(buildDripSkirt(CAKE_R, CAKE_TOP + 0.006), skirtMat));
+
+for (const d of dripSpecs) {
+  if (d.L < 0.1) continue;
+  const bead = new THREE.Mesh(new THREE.SphereGeometry(0.0105 + d.L * 0.02, 18, 14), ganacheMat);
+  bead.scale.set(0.8, 1.3, 1);
+  bead.rotation.y = -d.a;
+  bead.position.set(
+    Math.cos(d.a) * (CAKE_R + 0.0065),
+    CAKE_TOP + 0.006 - d.L + 0.002,
+    Math.sin(d.a) * (CAKE_R + 0.0065)
+  );
+  shadowed(bead);
+}
+
+function buildBerry() {
+  const geo = new THREE.SphereGeometry(0.034, 36, 28);
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const r = v.length();
+    const lat = Math.asin(clamp(v.y / r, -1, 1));
+    const lon = Math.atan2(v.z, v.x);
+    const cells = Math.sin(lon * 7 + lat * 3) * Math.sin(lat * 12 + 1.2);
+    const k = (r + 0.0036 * Math.abs(cells) ** 0.6) / r;
+    pos.setXYZ(i, v.x * k, v.y * k * 0.92, v.z * k);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const berryGeo = buildBerry();
+[
+  [0.4, 0.27, 1.0], [1.5, 0.31, 0.9], [2.5, 0.26, 1.05], [3.7, 0.32, 0.95], [4.8, 0.28, 1.0], [5.6, 0.34, 0.85],
+].forEach(([a, r, s], i) => {
+  const berry = new THREE.Mesh(berryGeo, berryMat);
+  berry.scale.setScalar(s);
+  berry.position.set(Math.cos(a) * r, CAKE_TOP + domeY(r) + 0.026 * s, Math.sin(a) * r);
+  berry.rotation.set(hash1(i + 2) * 6, hash1(i + 9) * 6, 0);
+  shadowed(berry);
+});
+
+[[0.9, 0.3, 0.2], [2.0, 0.29, -0.3], [3.1, 0.33, 0.1], [5.2, 0.3, 0.35]].forEach(([a, r, tilt], i) => {
+  const leaf = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 10), leafMat);
+  leaf.scale.set(0.05, 0.005, 0.022);
+  leaf.position.set(Math.cos(a) * r, CAKE_TOP + domeY(r) + 0.008, Math.sin(a) * r);
+  leaf.rotation.set(0, -a + 1.2 + i, tilt);
+  shadowed(leaf);
+});
+
+const flakeMat = goldMat.clone();
+flakeMat.side = THREE.DoubleSide;
+for (let i = 0; i < 16; i++) {
+  const a = hash1(i * 4.1 + 5) * Math.PI * 2;
+  const r = 0.11 + hash1(i * 6.7 + 2) * (CAKE_R - 0.17);
+  const flake = new THREE.Mesh(new THREE.CircleGeometry(0.008 + hash1(i * 3.3) * 0.009, 5), flakeMat);
+  flake.rotation.set(-Math.PI / 2 + (hash1(i * 1.9) - 0.5) * 0.3, 0, hash1(i * 8.8) * 6);
+  flake.position.set(Math.cos(a) * r, CAKE_TOP + domeY(r) + 0.0016, Math.sin(a) * r);
+  shadowed(flake, false);
+}
+
 const candle = new THREE.Mesh(buildCandleGeometry(), waxMat);
 candle.position.y = BASE_Y;
 scene.add(candle);
 
-const rim = new THREE.Mesh(new THREE.TorusGeometry(R_TOP * 0.97, 0.008, 10, 72), waxSolid);
+const rim = new THREE.Mesh(new THREE.TorusGeometry(R_TOP * 0.92, 0.0032, 8, 40), waxSolid);
 rim.rotation.x = Math.PI / 2;
-rim.position.y = TOP_Y - 0.004;
+rim.position.y = TOP_Y - 0.002;
 scene.add(rim);
 
-const pool = new THREE.Mesh(buildPool(R_TOP * 0.94), poolMat);
+const pool = new THREE.Mesh(buildPool(R_TOP * 0.86), poolMat);
 pool.rotation.x = -Math.PI / 2;
-pool.position.y = TOP_Y - 0.02;
+pool.position.y = TOP_Y - 0.001;
 scene.add(pool);
 
-const DUST_N = 12;
+const DUST_N = 40;
 const dustMotes = [];
 const dustPositions = new Float32Array(DUST_N * 3);
 const dustColors = new Float32Array(DUST_N * 3);
@@ -929,7 +1221,7 @@ function resetMote(mote, scatterY) {
   const rad = 0.16 + Math.random() * 0.38;
   mote.x = Math.cos(ang) * rad;
   mote.z = Math.sin(ang) * rad;
-  mote.y = scatterY ? 0.18 + Math.random() * 1.45 : 0.14 + Math.random() * 0.08;
+  mote.y = scatterY ? CAKE_TOP + 0.12 + Math.random() * 1.15 : CAKE_TOP + 0.08 + Math.random() * 0.1;
   mote.speed = 0.04 + Math.random() * 0.045;
   mote.phase = Math.random() * Math.PI * 2;
   mote.gain = 0.35 + Math.random() * 0.65;
@@ -949,7 +1241,7 @@ const dust = new THREE.Points(
   dustGeo,
   new THREE.PointsMaterial({
     map: makeRadial(),
-    size: 0.016,
+    size: 0.011,
     vertexColors: true,
     transparent: true,
     depthWrite: false,
@@ -963,18 +1255,18 @@ dust.visible = false;
 scene.add(dust);
 
 const wickCurve = new THREE.CatmullRomCurve3([
-  new THREE.Vector3(0, TOP_Y - 0.012, 0),
-  new THREE.Vector3(0.005, TOP_Y + 0.03, 0.002),
-  new THREE.Vector3(0.016, TOP_Y + 0.068, 0.004),
+  new THREE.Vector3(0, TOP_Y - 0.004, 0),
+  new THREE.Vector3(0.002, TOP_Y + 0.016, 0.001),
+  new THREE.Vector3(0.008, TOP_Y + 0.04, 0.002),
 ]);
 const wick = new THREE.Mesh(
-  new THREE.TubeGeometry(wickCurve, 14, 0.0055, 6, false),
+  new THREE.TubeGeometry(wickCurve, 12, 0.0036, 5, false),
   new THREE.MeshStandardMaterial({ color: 0x1a120e, roughness: 0.82, metalness: 0 })
 );
 scene.add(wick);
 const wickTipPos = wickCurve.getPoint(1);
 const wickTip = new THREE.Mesh(
-  new THREE.SphereGeometry(0.0072, 12, 8),
+  new THREE.SphereGeometry(0.0052, 12, 8),
   new THREE.MeshStandardMaterial({
     color: 0x2a1008,
     emissive: new THREE.Color('#ff3a12'),
@@ -986,24 +1278,32 @@ wickTip.position.copy(wickTipPos);
 scene.add(wickTip);
 
 const wickHit = new THREE.Mesh(
-  new THREE.CylinderGeometry(0.075, 0.075, 0.22, 12),
+  new THREE.CylinderGeometry(0.09, 0.09, 0.28, 12),
   new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, colorWrite: false })
 );
 wickHit.position.set(0, TOP_Y + 0.04, 0);
 scene.add(wickHit);
 
 const FW = 0.5;
-const FH = 0.78;
+const FH = 0.46;
 const flameGeo = new THREE.BoxGeometry(FW, FH, FW);
 flameGeo.translate(0, FH / 2, 0);
 flameUniforms.uBMin.value.set(-FW / 2, 0, -FW / 2);
 flameUniforms.uBMax.value.set(FW / 2, FH, FW / 2);
 const flameMesh = new THREE.Mesh(flameGeo, flameMat);
-const FLAME_BASE = wickTipPos.y - 0.018;
+const FLAME_BASE = wickTipPos.y - 0.01;
 flameMesh.position.y = FLAME_BASE;
 flameMesh.visible = false;
 flameMesh.renderOrder = 3;
 scene.add(flameMesh);
+
+const flameDepthProxy = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.02, 0.05, 1, 10).translate(0, 0.5, 0),
+  new THREE.MeshBasicMaterial()
+);
+flameDepthProxy.position.y = FLAME_BASE;
+flameDepthProxy.visible = false;
+scene.add(flameDepthProxy);
 
 const SW = 1.2;
 const SH = 1.15;
@@ -1017,22 +1317,213 @@ smokeMesh.visible = false;
 smokeMesh.renderOrder = 4;
 scene.add(smokeMesh);
 
+const BULB_TINTS = ['#ffd9a6', '#ffc88a', '#ffe7cb', '#f7b9a2', '#ffd08f'];
+const BULB_N = 38;
+const bulbPos = new Float32Array(BULB_N * 3);
+const bulbCol = new Float32Array(BULB_N * 3);
+const bulbSeed = new Float32Array(BULB_N);
+const bulbAlong = new Float32Array(BULB_N);
+const bulbSize = new Float32Array(BULB_N);
+const tint = new THREE.Color();
+for (let i = 0; i < BULB_N; i++) {
+  const x = (hash1(i * 1.7) - 0.5) * 6.4;
+  const y = 0.2 + hash1(i * 3.1 + 2) ** 1.2 * 2.4;
+  const z = -1.4 - hash1(i * 5.9 + 4) * 2.8;
+  bulbPos.set([x, y, z], i * 3);
+  tint.set(BULB_TINTS[i % BULB_TINTS.length]);
+  bulbCol.set([tint.r, tint.g, tint.b], i * 3);
+  bulbSeed[i] = hash1(i * 3.7);
+  bulbAlong[i] = (x + 3.2) / 6.4;
+  bulbSize[i] = 0.55 + hash1(i * 8.3 + 1) * 1.15;
+}
+const bulbGeo = new THREE.BufferGeometry();
+bulbGeo.setAttribute('position', new THREE.BufferAttribute(bulbPos, 3));
+bulbGeo.setAttribute('color', new THREE.BufferAttribute(bulbCol, 3));
+bulbGeo.setAttribute('seed', new THREE.BufferAttribute(bulbSeed, 1));
+bulbGeo.setAttribute('along', new THREE.BufferAttribute(bulbAlong, 1));
+bulbGeo.setAttribute('sz', new THREE.BufferAttribute(bulbSize, 1));
+const bulbUniforms = {
+  uTime: { value: 0 },
+  uLevel: { value: 0 },
+  uChase: { value: 0 },
+  uChaseAmt: { value: 0 },
+  uSize: { value: 1 },
+  uCalm: { value: 0 },
+};
+const bulbs = new THREE.Points(bulbGeo, new THREE.ShaderMaterial({
+  uniforms: bulbUniforms,
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  toneMapped: false,
+  vertexShader: /* glsl */ `
+    attribute vec3 color;
+    attribute float seed;
+    attribute float along;
+    attribute float sz;
+    uniform float uTime;
+    uniform float uLevel;
+    uniform float uChase;
+    uniform float uChaseAmt;
+    uniform float uSize;
+    uniform float uCalm;
+    varying vec3 vColor;
+    void main() {
+      float drift = 1.0 - uCalm * 0.85;
+      vec3 p = position;
+      p.y += sin(uTime * (0.09 + seed * 0.1) + seed * 40.0) * 0.1 * drift;
+      p.x += cos(uTime * (0.07 + seed * 0.08) + seed * 17.0) * 0.07 * drift;
+      float tw = 0.8 + 0.2 * sin(uTime * (0.5 + seed * 1.2) + seed * 40.0);
+      tw = mix(tw, 0.9, uCalm);
+      float wave = exp(-pow((fract(along - uChase) - 0.5) * 6.0, 2.0));
+      float glow = uLevel * tw + uChaseAmt * wave * 2.0;
+      vColor = color * glow;
+      vec4 mv = modelViewMatrix * vec4(p, 1.0);
+      gl_PointSize = uSize * sz * (0.14 + 0.05 * wave * uChaseAmt) / -mv.z;
+      gl_Position = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    varying vec3 vColor;
+    void main() {
+      vec2 c = gl_PointCoord - 0.5;
+      float d = length(c) * 2.0;
+      float disc = smoothstep(1.0, 0.9, d);
+      float rim = smoothstep(0.55, 0.92, d) * disc;
+      float core = smoothstep(0.7, 0.0, d);
+      float a = disc * 0.1 + rim * 0.15 + core * 0.08;
+      if (a < 0.004) discard;
+      gl_FragColor = vec4(vColor * a, 1.0);
+    }
+  `,
+}));
+bulbs.renderOrder = 2;
+scene.add(bulbs);
+
+const CONFETTI_COLORS = ['#f6cd7c', '#ffe8c2', '#f2b48a', '#ffd9b0'];
+const confettiGeo = new THREE.PlaneGeometry(0.03, 0.016);
+const confettiPieces = [];
+
+function spawnConfetti(piece, mode) {
+  const ang = Math.random() * Math.PI * 2;
+  if (mode === 'burst') {
+    const rad = 0.02 + Math.random() * 0.06;
+    piece.x = Math.cos(ang) * rad;
+    piece.z = Math.sin(ang) * rad;
+    piece.y = TOP_Y + 0.04 + Math.random() * 0.05;
+    piece.vx = (Math.random() - 0.5) * 0.16;
+    piece.vy = 0.32 + Math.random() * 0.38;
+    piece.vz = (Math.random() - 0.5) * 0.16;
+    piece.life = 0;
+    piece.dur = 1.55 + Math.random() * 0.7;
+    piece.fade = 1;
+    piece.active = true;
+  } else {
+    const rad = 0.16 + Math.random() * 0.48;
+    piece.x = Math.cos(ang) * rad;
+    piece.z = Math.sin(ang) * rad;
+    piece.y = CAKE_TOP + 0.2 + Math.random() * 0.9;
+    piece.vx = (Math.random() - 0.5) * 0.025;
+    piece.vy = 0.03 + Math.random() * 0.035;
+    piece.vz = (Math.random() - 0.5) * 0.025;
+    piece.fade = 1;
+    piece.active = true;
+  }
+}
+
+function makeConfetti(ambient) {
+  const mat = new THREE.MeshBasicMaterial({
+    color: CONFETTI_COLORS[confettiPieces.length % CONFETTI_COLORS.length],
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+  const mesh = new THREE.Mesh(confettiGeo, mat);
+  const piece = {
+    mesh,
+    ambient,
+    rx: Math.random() * Math.PI,
+    ry: Math.random() * Math.PI,
+    rz: Math.random() * Math.PI,
+    sx: (Math.random() - 0.5) * 2.4,
+    sy: (Math.random() - 0.5) * 3.1,
+    sz: (Math.random() - 0.5) * 1.8,
+    active: false,
+    fade: 0,
+    x: 0,
+    y: 0,
+    z: 0,
+    vx: 0,
+    vy: 0,
+    vz: 0,
+    life: 0,
+    dur: 1,
+  };
+  mesh.scale.setScalar(0.75 + Math.random() * 0.7);
+  spawnConfetti(piece, ambient ? 'ambient' : 'burst');
+  if (!ambient) piece.active = false;
+  scene.add(mesh);
+  confettiPieces.push(piece);
+}
+
+for (let i = 0; i < 12; i++) makeConfetti(false);
+
+function stepConfetti(p, dt) {
+  const pace = p.calm ? 0.05 : 1;
+  for (const piece of confettiPieces) {
+    if (!piece.active) {
+      piece.mesh.material.opacity = 0;
+      continue;
+    }
+    piece.x += piece.vx * dt * pace;
+    piece.y += piece.vy * dt * pace;
+    piece.z += piece.vz * dt * pace;
+    if (!p.calm) {
+      piece.rx += piece.sx * dt;
+      piece.ry += piece.sy * dt;
+      piece.rz += piece.sz * dt;
+    }
+    const radial = Math.hypot(piece.x, piece.z);
+    if (piece.ambient) {
+      piece.x += Math.sin(time * 0.55 + piece.ry) * 0.012 * dt * pace;
+      if (piece.y > 1.72 || (piece.y < CAKE_TOP && radial < CAKE_R)) spawnConfetti(piece, 'ambient');
+      if (radial > 0.82) {
+        piece.x *= 0.82 / radial;
+        piece.z *= 0.82 / radial;
+      }
+    } else {
+      piece.life += dt;
+      piece.vy -= 0.16 * dt * pace;
+      piece.fade = 1 - smoothstep(piece.dur * 0.4, piece.dur, piece.life);
+      if (piece.life > piece.dur || (piece.y < CAKE_TOP && radial < CAKE_R)) piece.active = false;
+    }
+    const dist = Math.hypot(piece.x - keyLight.position.x, piece.y - keyLight.position.y, piece.z - keyLight.position.z);
+    const illum = p.light * Math.exp(-dist * 1.05);
+    piece.mesh.position.set(piece.x, piece.y, piece.z);
+    piece.mesh.rotation.set(piece.rx, piece.ry, piece.rz);
+    piece.mesh.material.opacity = clamp(illum * piece.fade, 0, 1);
+  }
+}
+
 const camLocal = new THREE.Vector3();
-const colorWarm = new THREE.Color('#ff8c3e');
-const colorHot = new THREE.Color('#ffc48a');
+const colorWarm = new THREE.Color('#ffb070');
+const colorHot = new THREE.Color('#ffe0b8');
 
 function bulkSway(t, calm) {
-  const amp = calm ? 0.012 : 0.055;
-  const x = (noise1(t * 0.33) - 0.5) * 2 * amp + (noise1(t * 0.91 + 2.2) - 0.5) * amp * 0.8;
-  const z = (noise1(t * 0.29 + 4.1) - 0.5) * 1.7 * amp + (noise1(t * 1.07 + 1.3) - 0.5) * amp * 0.55;
+  const amp = calm ? 0.01 : 0.038;
+  const x = (noise1(t * 0.28) - 0.5) * 2 * amp + (noise1(t * 0.72 + 2.2) - 0.5) * amp * 0.7;
+  const z = (noise1(t * 0.24 + 4.1) - 0.5) * 1.5 * amp + (noise1(t * 0.86 + 1.3) - 0.5) * amp * 0.45;
   return { x, z };
 }
 
 function flickerEnergy(t, calm) {
-  const n = noise1(t * 0.83) * 0.46 + noise1(t * 2.27 + 4.2) * 0.32 + noise1(t * 5.73 + 1.6) * 0.22;
-  const amp = calm ? 0.012 : 0.085;
+  const n = noise1(t * 0.62) * 0.55 + noise1(t * 1.55 + 4.2) * 0.3 + noise1(t * 3.8 + 1.6) * 0.15;
+  const amp = calm ? 0.008 : 0.045;
   let e = 1 + (n - 0.5) * 2 * amp;
-  if (!calm && noise1(t * 0.41 + 8.2) > 0.84) e *= 0.86;
+  if (!calm && noise1(t * 0.33 + 8.2) > 0.9) e *= 0.94;
   return e;
 }
 
@@ -1110,28 +1601,37 @@ function applyPose(p, dt) {
   keyLight.position.set(sx, Math.max(FLAME_BASE + 0.02, coreY), sz);
   fillLight.position.set(sx * 0.4, FLAME_BASE + 0.02, sz * 0.4);
   emberLight.position.copy(wickTipPos);
-  const keyAmt = p.light * 11.5;
+  const keyAmt = p.light * 0.28;
   keyLight.intensity = keyAmt;
-  fillLight.intensity = p.light * 3.4 + (state === 'igniting' ? smoothstep(0, 0.1, stateT) * (1 - smoothstep(0.18, 0.42, stateT)) * 2.2 : 0);
-  emberLight.intensity = p.ember * 0.38;
-  keyLight.color.copy(colorWarm).lerp(colorHot, clamp((p.energy - 0.9) * 2, 0, 1));
+  fillLight.intensity = p.light * 0.06 + (state === 'igniting' ? smoothstep(0, 0.1, stateT) * (1 - smoothstep(0.18, 0.42, stateT)) * 0.08 : 0);
+  emberLight.intensity = p.ember * 0.01;
+  keyLight.color.copy(colorWarm).lerp(colorHot, clamp((p.energy - 0.94) * 2.5, 0, 1));
 
-  poolLight.material.opacity = p.light * 0.28;
-  poolLight.scale.setScalar(0.92 + p.light * 0.12);
-  const amb = (state === 'unlit' || state === 'ember') ? 0.11 : 0.03;
+  poolLight.material.opacity = p.light * 0.07;
+  poolLight.scale.setScalar(0.95 + p.light * 0.08);
+  const room = bulbUniforms.uLevel.value;
+  hemi.intensity = 0.04 + room * 0.1;
+  garlandLight.intensity = room * 0.55;
+  const amb = 0.05 + room * 0.15 + (1 - clamp(p.light, 0, 1)) * 0.03;
   for (const mat of waxMaterials) {
     mat.uniforms.uLightPos.value.copy(keyLight.position);
     mat.uniforms.uLightColor.value.copy(keyLight.color);
-    mat.uniforms.uLightIntensity.value = Math.max(p.light * 3.4, state === 'igniting' ? smoothstep(0, 0.15, stateT) * 1.4 : 0);
+    mat.uniforms.uLightIntensity.value = Math.max(p.light * 2.6, state === 'igniting' ? smoothstep(0, 0.15, stateT) * 1.1 : 0);
     mat.uniforms.uEmberPos.value.copy(wickTipPos);
     mat.uniforms.uEmberIntensity.value = p.ember * 0.7;
     mat.uniforms.uAmbient.value = amb;
   }
   poolMat.uniforms.uEmit.value = p.light * 0.55 + p.ember * 0.22;
-  const wickGlow = state === 'ember' ? p.ember * 0.95 : Math.max(0, p.wick) * 0.7;
+  stepConfetti(p, dt);
+  bulbUniforms.uTime.value = time;
+  bulbUniforms.uCalm.value = p.calm ? 1 : 0;
+  if (bulbUniforms.uChaseAmt.value > 0.001) bulbUniforms.uChase.value += dt * (p.calm ? 0.12 : 0.55);
+  flameDepthProxy.scale.set(Math.max(p.width, 0.3), Math.max(flameH, 0.001), Math.max(p.width, 0.3));
+  flameDepthProxy.position.x = p.lean * 0.5;
+  const wickGlow = state === 'ember' ? p.ember * 0.75 : Math.max(0, p.wick) * 0.42;
   wickTip.material.emissiveIntensity = wickGlow;
   wickTip.scale.setScalar(state === 'ember' ? 0.85 + p.ember * 0.2 : 1);
-  wickTip.material.emissive.set(state === 'ember' ? '#ff2c10' : '#ff4a16');
+  wickTip.material.emissive.set(state === 'ember' ? '#ff4a22' : '#ff8a4a');
 
   camLocal.copy(camera.position);
   flameMesh.worldToLocal(camLocal);
@@ -1160,8 +1660,9 @@ function applyPose(p, dt) {
     mote.z += Math.cos(time * 0.27 + mote.phase * 1.3) * 0.012 * pace;
     if (mote.y > 1.82) resetMote(mote, false);
     const radial = Math.hypot(mote.x, mote.z);
-    if (radial < 0.17 && mote.y < TOP_Y) {
-      const push = 0.17 / Math.max(radial, 0.001);
+    if (mote.y < CAKE_TOP && radial < CAKE_R) mote.y = CAKE_TOP + 0.06;
+    if (radial < 0.06 && mote.y < TOP_Y && mote.y > BASE_Y) {
+      const push = 0.06 / Math.max(radial, 0.001);
       mote.x *= push;
       mote.z *= push;
     }
@@ -1179,6 +1680,20 @@ function setState(next) {
   state = next;
   stateT = 0;
   updateUI();
+  if (next === 'burning') playMelody();
+}
+
+const rig = { dolly: 0, lift: 0, orbit: 0, aim: 0 };
+const BULB_REST = 0.24;
+
+function moveRig(vars, duration, ease = 'power2.inOut') {
+  gsap.killTweensOf(rig);
+  if (reduceMotion) gsap.set(rig, vars);
+  else gsap.to(rig, { ...vars, duration, ease });
+}
+
+function setBulbs(level, duration) {
+  gsap.to(bulbUniforms.uLevel, { value: level, duration, ease: 'sine.inOut', overwrite: true });
 }
 
 function startIgnite() {
@@ -1186,6 +1701,16 @@ function startIgnite() {
   unlockAudio();
   playIgnite();
   smokeKill = smokeT >= 0;
+  for (const piece of confettiPieces) {
+    if (!piece.ambient) spawnConfetti(piece, 'burst');
+  }
+  if (celebrateTl) {
+    celebrateTl.kill();
+    celebrateTl = null;
+    gsap.to(celebrateEl, { autoAlpha: 0, duration: 0.4, overwrite: true });
+  }
+  moveRig({ dolly: 0.62, lift: -0.08, orbit: 0, aim: 0 }, 2.8);
+  setBulbs(0.16, 1.6);
   setState('igniting');
 }
 
@@ -1193,12 +1718,100 @@ function startExtinguish() {
   if (state !== 'burning') return;
   unlockAudio();
   playExtinguish();
+  stopMelody();
   leanSign = Math.random() < 0.5 ? -1 : 1;
   smokeLean = leanSign * 0.16;
   smokeT = 0;
   smokeKill = false;
   smokeUniforms.uLean.value = smokeLean;
   setState('extinguishing');
+  gsap.delayedCall(0.55, celebrate);
+}
+
+const CONFETTI_PALETTE = ['#f6cd7c', '#ffe8c2', '#f2b48a', '#fff3e2', '#e9c58a', '#f7d9d0'];
+const confettiFx = confetti.create(document.getElementById('confetti'), { resize: true, useWorker: true });
+const celebrateEl = document.getElementById('celebrate');
+const wishTitle = celebrateEl.querySelector('.wish-title');
+const wishSub = celebrateEl.querySelector('.wish-sub');
+let wishSplit = null;
+let celebrateTl = null;
+const cakeScreen = new THREE.Vector3();
+
+function cakeOrigin() {
+  cakeScreen.set(0, TOP_Y, 0).project(camera);
+  return { x: (cakeScreen.x + 1) / 2, y: (1 - cakeScreen.y) / 2 };
+}
+
+function fireConfetti() {
+  const base = { colors: CONFETTI_PALETTE, shapes: ['square', 'circle'], disableForReducedMotion: true };
+  confettiFx({ ...base, particleCount: 110, spread: 76, startVelocity: 40, scalar: 0.95, ticks: 280, origin: cakeOrigin() });
+  const cannon = (x, angle, delay) => gsap.delayedCall(delay, () => confettiFx({
+    ...base,
+    particleCount: 70,
+    angle,
+    spread: 58,
+    startVelocity: 62,
+    drift: x < 0.5 ? 0.4 : -0.4,
+    ticks: 340,
+    origin: { x, y: 0.92 },
+  }));
+  cannon(0, 62, 0.18);
+  cannon(1, 118, 0.3);
+  cannon(0.08, 70, 0.95);
+  cannon(0.92, 110, 1.05);
+}
+
+function celebrate() {
+  playCelebrate();
+  if (!reduceMotion) fireConfetti();
+
+  bulbUniforms.uChase.value = 0;
+  gsap.timeline({ overwrite: true })
+    .to(bulbUniforms.uLevel, { value: 0.9, duration: 0.8, ease: 'power2.out' })
+    .to(bulbUniforms.uChaseAmt, { value: reduceMotion ? 0 : 1, duration: 0.4 }, 0)
+    .to(bulbUniforms.uChaseAmt, { value: 0, duration: 1.4, ease: 'sine.inOut' }, 4.2)
+    .to(bulbUniforms.uLevel, { value: BULB_REST, duration: 2.2, ease: 'sine.inOut' }, 4.2);
+  moveRig({ dolly: -0.25, lift: 0.08, orbit: 0, aim: 0.26 }, 1.6, 'power3.out');
+
+  if (celebrateTl) celebrateTl.kill();
+  if (!wishSplit) wishSplit = new SplitText(wishTitle, { type: 'chars', charsClass: 'char' });
+  gsap.set(celebrateEl, { autoAlpha: 1, y: 0 });
+  celebrateTl = gsap.timeline();
+  if (reduceMotion) {
+    gsap.set([wishSplit.chars, wishSub], { clearProps: 'all' });
+    celebrateTl.fromTo(celebrateEl, { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.6 });
+  } else {
+    celebrateTl
+      .fromTo(wishSplit.chars, {
+        yPercent: 90,
+        rotateX: -80,
+        scale: 0.6,
+        autoAlpha: 0,
+        filter: 'blur(10px)',
+      }, {
+        yPercent: 0,
+        rotateX: 0,
+        scale: 1,
+        autoAlpha: 1,
+        filter: 'blur(0px)',
+        duration: 1.1,
+        ease: 'back.out(1.7)',
+        stagger: 0.1,
+      })
+      .fromTo(wishSub,
+        { y: 14, autoAlpha: 0, filter: 'blur(6px)' },
+        { y: 0, autoAlpha: 1, filter: 'blur(0px)', duration: 0.9, ease: 'power2.out' },
+        '-=0.5')
+      .to(wishSplit.chars, {
+        keyframes: { y: [0, -8, 0] },
+        duration: 1.2,
+        ease: 'sine.inOut',
+        stagger: { each: 0.08, repeat: 1 },
+      }, '+=0.2');
+  }
+  celebrateTl
+    .to(celebrateEl, { autoAlpha: 0, y: -18, duration: 1.1, ease: 'power2.in' }, reduceMotion ? 4.5 : '+=0.6')
+    .add(() => moveRig({ dolly: 0, lift: 0, orbit: 0, aim: 0 }, 2.6), '-=0.6');
 }
 
 function primary() {
@@ -1233,37 +1846,133 @@ function frameCamera() {
   const h = window.innerHeight;
   const narrow = w < 760;
   const short = h < 540;
-  camera.fov = narrow ? (short ? 40 : 36) : 32;
-  const z = narrow ? (short ? 4.45 : 4.2) : 4.05;
-  const camY = narrow ? (short ? 2.2 : 2.32) : 2.48;
-  const lookY = narrow ? (short ? 0.58 : 0.5) : 0.42;
-  camera.position.set(narrow ? 0.08 : 0.28, camY, z);
-  camera.lookAt(0, lookY, 0);
+  const portrait = narrow && h > w * 1.15;
+  camera.fov = portrait ? 42 : narrow ? (short ? 40 : 36) : 32;
+  const z = portrait ? 5.4 : narrow ? (short ? 4.9 : 4.5) : 4.0;
+  const camY = portrait ? 1.55 : narrow ? (short ? 1.3 : 1.4) : 1.4;
+  const lookY = portrait ? 0.62 : narrow ? (short ? 0.34 : 0.36) : 0.58;
+  camBase.pos.set(portrait ? 0 : narrow ? 0.04 : 0.18, camY, z);
+  camBase.look.set(0, lookY, 0);
+}
+
+const camBase = { pos: new THREE.Vector3(), look: new THREE.Vector3() };
+const pointer = { x: 0, y: 0, sx: 0, sy: 0 };
+const camDir = new THREE.Vector3();
+const camLook = new THREE.Vector3();
+const focusTarget = new THREE.Vector3(0, TOP_Y - 0.04, 0);
+
+function updateCamera(dt) {
+  const follow = reduceMotion ? 0 : 1 - Math.exp(-dt * 2.2);
+  pointer.sx += ((reduceMotion ? 0 : pointer.x) - pointer.sx) * follow;
+  pointer.sy += ((reduceMotion ? 0 : pointer.y) - pointer.sy) * follow;
+  const drift = reduceMotion ? 0 : Math.sin(time * 0.21) * 0.025;
+  camDir.subVectors(camBase.look, camBase.pos).normalize();
+  camera.position.copy(camBase.pos).addScaledVector(camDir, rig.dolly);
+  camera.position.y += rig.lift - pointer.sy * 0.12;
+  const ang = rig.orbit + pointer.sx * 0.07 + drift;
+  const dx = camera.position.x - camBase.look.x;
+  const dz = camera.position.z - camBase.look.z;
+  camera.position.x = camBase.look.x + dx * Math.cos(ang) + dz * Math.sin(ang);
+  camera.position.z = camBase.look.z - dx * Math.sin(ang) + dz * Math.cos(ang);
+  camLook.copy(camBase.look);
+  camLook.y += rig.lift * 0.35 + rig.aim;
+  camera.lookAt(camLook);
+  if (focusPass) {
+    camera.getWorldDirection(camDir);
+    focusPass.uniforms.focus.value = camDir.dot(camLook.subVectors(focusTarget, camera.position));
+  }
+}
+
+const WarmGradeShader = {
+  name: 'WarmGrade',
+  uniforms: { tDiffuse: { value: null } },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    varying vec2 vUv;
+    void main() {
+      vec4 src = texture2D(tDiffuse, vUv);
+      vec3 col = src.rgb * vec3(1.015, 1.0, 0.97);
+      float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      col += vec3(0.004, 0.003, 0.002) * (1.0 - smoothstep(0.0, 0.35, lum));
+      vec3 grey = vec3(lum);
+      col = mix(grey, col, mix(1.08, 0.96, smoothstep(0.55, 2.4, lum)));
+      gl_FragColor = vec4(max(col, 0.0), src.a);
+    }
+  `,
+};
+
+class FocusPass extends BokehPass {
+  constructor(sceneRef, cameraRef, params, hidden) {
+    super(sceneRef, cameraRef, params);
+    this.hidden = hidden;
+    this.saved = [];
+    this.uniforms.range = { value: params.range };
+    this.materialBokeh.fragmentShader = this.materialBokeh.fragmentShader
+      .replace('uniform float focus;', 'uniform float focus;\nuniform float range;')
+      .replace(
+        'float factor = ( focus + viewZ );',
+        'float gap = focus + viewZ;\nfloat factor = sign( gap ) * max( abs( gap ) - range, 0.0 );'
+      );
+  }
+
+  setSize(width, height) {
+    super.setSize(width, height);
+    this.renderTargetDepth.setSize(Math.max(1, width >> 1), Math.max(1, height >> 1));
+  }
+
+  render(renderer, writeBuffer, readBuffer, deltaTime, maskActive) {
+    const flameOn = flameMesh.visible;
+    this.saved.length = 0;
+    for (const obj of this.hidden) {
+      this.saved.push(obj.visible);
+      obj.visible = false;
+    }
+    flameDepthProxy.visible = flameOn;
+    super.render(renderer, writeBuffer, readBuffer, deltaTime, maskActive);
+    flameDepthProxy.visible = false;
+    this.hidden.forEach((obj, i) => { obj.visible = this.saved[i]; });
+  }
 }
 
 let composer;
 let bloomPass;
+let focusPass = null;
 function setupComposer() {
-  const pr = Math.min(window.devicePixelRatio || 1, window.innerWidth < 760 ? 1.4 : 1.75);
+  const pr = Math.min(window.devicePixelRatio || 1, window.innerWidth < 760 ? 1.25 : 1.5);
   renderer.setPixelRatio(pr);
   renderer.setSize(window.innerWidth, window.innerHeight);
   composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
+  focusPass = new FocusPass(scene, camera, { focus: 4, aperture: 0.02, maxblur: 0.034, range: 0.7 }, [
+    flameMesh, smokeMesh, wickHit, dust, bulbs, poolLight, contact,
+    ...confettiPieces.map((piece) => piece.mesh),
+  ]);
+  composer.addPass(focusPass);
   bloomPass = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
-    0.28,
-    0.38,
+    0.22,
+    0.78,
     1.05
   );
-  for (const tint of bloomPass.bloomTintColors) tint.set(1, 0.78, 0.48);
+  for (const tint of bloomPass.bloomTintColors) tint.set(1, 0.86, 0.68);
   composer.addPass(bloomPass);
+  composer.addPass(new ShaderPass(WarmGradeShader));
   composer.addPass(new OutputPass());
 }
 
+let prCap = 2;
+let tier = 0;
 function resize() {
   const w = window.innerWidth;
   const h = window.innerHeight;
-  const pr = Math.min(window.devicePixelRatio || 1, w < 760 ? 1.4 : 1.75);
+  const pr = Math.min(window.devicePixelRatio || 1, w < 760 ? 1.25 : 1.5, prCap);
   renderer.setPixelRatio(pr);
   renderer.setSize(w, h);
   composer.setPixelRatio(pr);
@@ -1271,15 +1980,39 @@ function resize() {
   camera.aspect = w / h;
   frameCamera();
   camera.updateProjectionMatrix();
+  updateBulbSize();
   const coarse = window.matchMedia('(pointer: coarse)').matches;
   wickHit.scale.set(coarse ? 1.4 : 1, coarse ? 1.15 : 1, coarse ? 1.4 : 1);
   flameUniforms.uSteps.value = w < 760 ? 22 : 32;
   smokeUniforms.uSteps.value = w < 760 ? 14 : 18;
+  if (tier >= 1) flameUniforms.uSteps.value = Math.min(flameUniforms.uSteps.value, tier >= 2 ? 16 : 24);
+  if (tier >= 2) smokeUniforms.uSteps.value = Math.min(smokeUniforms.uSteps.value, 10);
+}
+
+function updateBulbSize() {
+  const fovRad = THREE.MathUtils.degToRad(camera.fov);
+  bulbUniforms.uSize.value = renderer.getPixelRatio() * window.innerHeight / (2 * Math.tan(fovRad / 2));
 }
 
 setupComposer();
 resize();
 updateUI();
+
+function intro() {
+  const curtain = document.getElementById('curtain');
+  if (reduceMotion) {
+    gsap.set(curtain, { autoAlpha: 0 });
+    bulbUniforms.uLevel.value = BULB_REST;
+    return;
+  }
+  gsap.set(rig, { dolly: -1.15, lift: 0.4, orbit: -0.22 });
+  gsap.timeline({ delay: 0.15 })
+    .to(curtain, { autoAlpha: 0, duration: 1.8, ease: 'power2.out' })
+    .to(rig, { dolly: 0, lift: 0, orbit: 0, duration: 3.6, ease: 'power3.out' }, 0)
+    .to(bulbUniforms.uLevel, { value: BULB_REST, duration: 2.4, ease: 'sine.inOut' }, 0.6)
+    .from('.chrome', { autoAlpha: 0, y: (i) => (i === 0 ? -10 : 14), duration: 1.1, ease: 'power2.out', stagger: 0.15, clearProps: 'all' }, 1.4);
+}
+intro();
 
 const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
@@ -1331,6 +2064,10 @@ renderer.domElement.addEventListener('pointermove', (e) => {
   const rect = renderer.domElement.getBoundingClientRect();
   ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
   ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  if (e.pointerType === 'mouse') {
+    pointer.x = ndc.x;
+    pointer.y = ndc.y;
+  }
   raycaster.setFromCamera(ndc, camera);
   let hot = false;
   if (state === 'unlit' || state === 'ember') hot = raycaster.intersectObject(wickHit, false).length > 0;
@@ -1375,9 +2112,44 @@ motionQuery.addEventListener('change', (ev) => {
 window.addEventListener('resize', resize);
 
 let last = performance.now();
-let slowFrames = 0;
-let adapted = false;
 let elapsed = 0;
+
+let frameAvg = 1 / 60;
+let sinceAdapt = 0;
+
+function setQuality(next) {
+  tier = next;
+  if (tier >= 1) {
+    shadowEvery = 3;
+    prCap = 1.25;
+    flameUniforms.uSteps.value = Math.min(flameUniforms.uSteps.value, 24);
+  }
+  if (tier >= 2) {
+    prCap = 1;
+    focusPass.enabled = false;
+    flameUniforms.uSteps.value = Math.min(flameUniforms.uSteps.value, 16);
+    smokeUniforms.uSteps.value = Math.min(smokeUniforms.uSteps.value, 10);
+  }
+  if (tier >= 3) {
+    shadowsLive = false;
+    bloomPass.enabled = false;
+  }
+  const pr = Math.min(window.devicePixelRatio || 1, window.innerWidth < 760 ? 1.25 : 1.5, prCap);
+  renderer.setPixelRatio(pr);
+  composer.setPixelRatio(pr);
+  composer.setSize(window.innerWidth, window.innerHeight);
+  updateBulbSize();
+}
+
+function adaptQuality(dt) {
+  if (elapsed < 2.5 || tier >= 3) return;
+  frameAvg += (dt - frameAvg) * 0.05;
+  sinceAdapt += dt;
+  if (sinceAdapt > 1.2 && frameAvg > 0.0215) {
+    sinceAdapt = 0;
+    setQuality(tier + 1);
+  }
+}
 
 function tick(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
@@ -1386,6 +2158,7 @@ function tick(now) {
   elapsed += dt;
   stepState(dt);
   sampleBlow(dt);
+  updateCamera(dt);
   const p = pose();
   applyPose(p, dt);
   updateChrome();
@@ -1393,17 +2166,12 @@ function tick(now) {
     playCrackle();
     audio.nextCrackle = time + 0.09 + Math.random() * 0.26;
   }
-  composer.render();
-  if (!adapted && elapsed > 2) {
-    if (dt > 0.034) slowFrames += 1;
-    else slowFrames = Math.max(0, slowFrames - 1);
-    if (slowFrames > 25) {
-      adapted = true;
-      flameUniforms.uSteps.value = Math.min(flameUniforms.uSteps.value, 16);
-      renderer.setPixelRatio(1);
-      composer.setPixelRatio(1);
-    }
+  if (shadowsLive && p.light > 0.02 && ++shadowTick >= shadowEvery) {
+    shadowTick = 0;
+    renderer.shadowMap.needsUpdate = true;
   }
+  composer.render();
+  adaptQuality(dt);
   requestAnimationFrame(tick);
 }
 
