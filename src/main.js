@@ -10,6 +10,8 @@ import { gsap } from 'gsap';
 import { SplitText } from 'gsap/SplitText.js';
 import confetti from 'canvas-confetti';
 import { view } from './experience.js';
+import { audio, unlockAudio, playIgnite, playExtinguish, playMelody, stopMelody, playCelebrate, playCrackle } from './audio.mjs';
+import { createMicrophone } from './microphone.mjs';
 
 gsap.registerPlugin(SplitText);
 
@@ -40,19 +42,6 @@ let smokeKill = false;
 let smokeLean = 0.12;
 let celebrationPending = false;
 
-const audio = { ctx: null, master: null, noise: null, music: null, voices: [], muted: true, nextCrackle: 0 };
-const mic = {
-  on: false,
-  stream: null,
-  ctx: null,
-  analyser: null,
-  buf: null,
-  baseline: 0.02,
-  hold: 0,
-  arm: 0,
-  request: 0,
-};
-
 function clamp(v, a, b) { return Math.min(b, Math.max(a, v)); }
 function lerp(a, b, t) { return a + (b - a) * t; }
 function smoothstep(a, b, x) {
@@ -82,264 +71,23 @@ function updateUI() {
   document.documentElement.dataset.motion = reduceMotion ? 'reduce' : 'full';
 }
 
-function unlockAudio() {
-  const Ctx = window.AudioContext || window.webkitAudioContext;
-  if (!Ctx) return;
-  if (!audio.ctx) {
-    audio.ctx = new Ctx();
-    audio.master = audio.ctx.createGain();
-    audio.master.gain.value = audio.muted ? 0 : 0.26;
-    audio.master.connect(audio.ctx.destination);
-    const len = audio.ctx.sampleRate;
-    const buf = audio.ctx.createBuffer(1, len, audio.ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
-    audio.noise = buf;
-  }
-  if (audio.ctx.state === 'suspended') audio.ctx.resume().catch(() => {});
-}
+const mic = createMicrophone({
+  getState: () => state,
+  getTime: () => time,
+  onDetect: startExtinguish,
+  onNote: setNote,
+  onMicChange: view.mic,
+  onLevel(level) {
+    if (level === null) els.blow.style.removeProperty('--mic-level');
+    else els.blow.style.setProperty('--mic-level', String(level));
+  },
+  onUpdate: updateUI,
+  button: els.blow,
+});
 
-function tone(freq, dur, type, gain) {
-  if (!audio.ctx || audio.muted) return;
-  const t0 = audio.ctx.currentTime;
-  const osc = audio.ctx.createOscillator();
-  const g = audio.ctx.createGain();
-  osc.type = type;
-  osc.frequency.setValueAtTime(freq, t0);
-  g.gain.setValueAtTime(gain, t0);
-  g.gain.exponentialRampToValueAtTime(0.0008, t0 + dur);
-  osc.connect(g);
-  g.connect(audio.master);
-  osc.start(t0);
-  osc.stop(t0 + dur + 0.02);
-}
-
-function noiseBurst({ dur, type, freq, q, gain, freqEnd }) {
-  if (!audio.ctx || audio.muted || !audio.noise) return;
-  const t0 = audio.ctx.currentTime;
-  const src = audio.ctx.createBufferSource();
-  src.buffer = audio.noise;
-  const filter = audio.ctx.createBiquadFilter();
-  filter.type = type;
-  filter.frequency.setValueAtTime(freq, t0);
-  if (freqEnd) filter.frequency.exponentialRampToValueAtTime(Math.max(40, freqEnd), t0 + dur);
-  filter.Q.value = q;
-  const g = audio.ctx.createGain();
-  g.gain.setValueAtTime(0.0001, t0);
-  g.gain.exponentialRampToValueAtTime(gain, t0 + 0.012);
-  g.gain.exponentialRampToValueAtTime(0.0008, t0 + dur);
-  src.connect(filter);
-  filter.connect(g);
-  g.connect(audio.master);
-  src.start(t0);
-  src.stop(t0 + dur + 0.02);
-}
-
-function playIgnite() {
-  noiseBurst({ dur: 0.1, type: 'highpass', freq: 1400, q: 0.6, gain: 0.07 });
-  tone(210, 0.14, 'sine', 0.035);
-}
-
-function playExtinguish() {
-  noiseBurst({ dur: 0.32, type: 'lowpass', freq: 1600, freqEnd: 180, q: 0.5, gain: 0.09 });
-}
-
-const MELODY = [
-  ['G4', 0.75], ['G4', 0.25], ['A4', 1], ['G4', 1], ['C5', 1], ['B4', 2],
-  ['G4', 0.75], ['G4', 0.25], ['A4', 1], ['G4', 1], ['D5', 1], ['C5', 2],
-  ['G4', 0.75], ['G4', 0.25], ['G5', 1], ['E5', 1], ['C5', 1], ['B4', 1], ['A4', 2],
-  ['F5', 0.75], ['F5', 0.25], ['E5', 1], ['C5', 1], ['D5', 1], ['C5', 3],
-];
-const NOTE_SEMI = { C: -9, D: -7, E: -5, F: -4, G: -2, A: 0, B: 2 };
-
-function noteFreq(name) {
-  const semi = NOTE_SEMI[name[0]] + (Number(name[1]) - 4) * 12;
-  return 440 * 2 ** (semi / 12);
-}
-
-function musicBus() {
-  if (audio.music) return audio.music;
-  const ctx = audio.ctx;
-  const bus = ctx.createGain();
-  const delay = ctx.createDelay(1);
-  const feedback = ctx.createGain();
-  const tail = ctx.createBiquadFilter();
-  delay.delayTime.value = 0.23;
-  feedback.gain.value = 0.32;
-  tail.type = 'lowpass';
-  tail.frequency.value = 2600;
-  bus.connect(audio.master);
-  bus.connect(delay);
-  delay.connect(tail);
-  tail.connect(feedback);
-  feedback.connect(delay);
-  tail.connect(audio.master);
-  audio.music = bus;
-  return bus;
-}
-
-function chime(freq, at, gain, out) {
-  const ctx = audio.ctx;
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(0.0001, at);
-  g.gain.exponentialRampToValueAtTime(gain, at + 0.006);
-  g.gain.exponentialRampToValueAtTime(0.0006, at + 1.5);
-  g.connect(out);
-  for (const [mul, amp] of [[1, 1], [2.01, 0.32], [4.03, 0.1]]) {
-    const osc = ctx.createOscillator();
-    const og = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.value = freq * mul;
-    og.gain.value = amp;
-    osc.connect(og);
-    og.connect(g);
-    osc.start(at);
-    osc.stop(at + 1.55);
-    audio.voices.push(osc);
-  }
-}
-
-function playMelody() {
-  if (!audio.ctx || audio.muted) return;
-  stopMelody();
-  const bus = musicBus();
-  bus.gain.cancelScheduledValues(audio.ctx.currentTime);
-  bus.gain.setValueAtTime(0.55, audio.ctx.currentTime);
-  const beat = 0.44;
-  let at = audio.ctx.currentTime + 0.25;
-  for (const [name, beats] of MELODY) {
-    chime(noteFreq(name), at, 0.16, bus);
-    at += beats * beat;
-  }
-}
-
-function stopMelody() {
-  if (!audio.ctx || !audio.music) return;
-  const now = audio.ctx.currentTime;
-  audio.music.gain.cancelScheduledValues(now);
-  audio.music.gain.setValueAtTime(audio.music.gain.value, now);
-  audio.music.gain.linearRampToValueAtTime(0, now + 0.35);
-  for (const osc of audio.voices) {
-    try { osc.stop(now + 0.4); } catch {}
-  }
-  audio.voices = [];
-}
-
-function playCelebrate() {
-  if (!audio.ctx || audio.muted) return;
-  noiseBurst({ dur: 0.18, type: 'bandpass', freq: 2400, freqEnd: 900, q: 0.7, gain: 0.12 });
-  const bus = musicBus();
-  const now = audio.ctx.currentTime;
-  bus.gain.cancelScheduledValues(now);
-  bus.gain.setValueAtTime(0.55, now);
-  ['C6', 'E6', 'G6', 'C7'].forEach((n, i) => chime(noteFreq(n), now + 0.08 + i * 0.075, 0.09, bus));
-}
-
-function playCrackle() {
-  noiseBurst({
-    dur: 0.025 + Math.random() * 0.04,
-    type: 'bandpass',
-    freq: 700 + Math.random() * 2200,
-    q: 0.8,
-    gain: 0.012 + Math.random() * 0.03,
-  });
-}
-
-async function enableMic() {
-  if (state !== 'burning') return;
-  if (!navigator.mediaDevices?.getUserMedia) {
-    setNote('无法使用麦克风，请用熄灭按钮');
-    return;
-  }
-  els.blow.disabled = true;
-  els['blow-label'].textContent = '等待麦克风…';
-  const request = ++mic.request;
-  let stream;
-  let ctx;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-      video: false,
-    });
-    if (request !== mic.request || state !== 'burning') {
-      stream.getTracks().forEach((track) => track.stop());
-      return;
-    }
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    ctx = new Ctx();
-    await ctx.resume();
-    if (request !== mic.request || state !== 'burning') {
-      stream.getTracks().forEach((track) => track.stop());
-      await ctx.close();
-      return;
-    }
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 1024;
-    const source = ctx.createMediaStreamSource(stream);
-    source.connect(analyser);
-    mic.on = true;
-    mic.stream = stream;
-    mic.ctx = ctx;
-    mic.analyser = analyser;
-    mic.buf = new Float32Array(analyser.fftSize);
-    mic.baseline = 0.02;
-    mic.hold = 0;
-    mic.arm = time + 0.5;
-    view.mic(true);
-    setNote('仅在本机感受声音，吹灭后会自动关闭麦克风。');
-    updateUI();
-  } catch {
-    stream?.getTracks().forEach((track) => track.stop());
-    if (ctx) ctx.close().catch(() => {});
-    if (request === mic.request) {
-      setNote('暂时听不到你的声音，点击按钮也能吹灭。');
-      view.mic(false);
-    }
-  } finally {
-    if (request === mic.request) {
-      els.blow.disabled = false;
-      if (!mic.on) view.mic(false);
-    }
-  }
-}
-
-function disableMic() {
-  mic.request++;
-  mic.on = false;
-  els.blow.disabled = false;
-  if (mic.stream) mic.stream.getTracks().forEach((t) => t.stop());
-  if (mic.ctx) mic.ctx.close().catch(() => {});
-  mic.stream = null;
-  mic.ctx = null;
-  mic.analyser = null;
-  view.mic(false);
-  els.blow.style.removeProperty('--mic-level');
-  setNote('');
-  updateUI();
-}
-
-function sampleBlow(dt) {
-  if (!mic.on || !mic.analyser || state !== 'burning' || time < mic.arm) {
-    mic.hold = 0;
-    return;
-  }
-  mic.analyser.getFloatTimeDomainData(mic.buf);
-  let sum = 0;
-  for (let i = 0; i < mic.buf.length; i++) sum += mic.buf[i] * mic.buf[i];
-  const rms = Math.sqrt(sum / mic.buf.length);
-  els.blow.style.setProperty('--mic-level', String(clamp(rms * 12, 0.2, 1)));
-  mic.baseline += (rms - mic.baseline) * 0.018;
-  if (rms - mic.baseline > 0.05 && rms > 0.07) {
-    mic.hold += dt;
-    if (mic.hold > 0.075) {
-      mic.hold = 0;
-      mic.arm = time + 0.6;
-      startExtinguish();
-    }
-  } else {
-    mic.hold = Math.max(0, mic.hold - dt);
-  }
-}
+function enableMic() { mic.enable(); }
+function disableMic() { mic.disable(); }
+function sampleBlow(dt) { mic.sample(dt); }
 
 const NOISE_GLSL = /* glsl */ `
 float hash13(vec3 p3) {
@@ -744,10 +492,19 @@ if (!renderer.capabilities.isWebGL2) {
   throw new Error('webgl2 required');
 }
 
+let renderFailureScheduled = false;
+function requestFlatFallback() {
+  if (renderFailureScheduled) return;
+  renderFailureScheduled = true;
+  window.setTimeout(() => {
+    if (running) document.dispatchEvent(new Event('candle:render-failed'));
+  }, 0);
+}
+
 renderer.debug.onShaderError = (gl, program, _vs, fs) => {
   const log = `${gl.getProgramInfoLog(program) || ''}\n${gl.getShaderInfoLog(fs) || ''}`;
   console.error(log);
-  setNote('着色器编译失败');
+  requestFlatFallback();
 };
 
 const ROOM_BG = 0x100d0b;
@@ -1744,11 +1501,11 @@ function frameCamera() {
   const { width, height } = els.stage.getBoundingClientRect();
   const aspect = width / Math.max(height, 1);
   camera.fov = 32;
-  const z = narrow ? 3.0 : 3.6;
+  const z = narrow ? 3.2 : 3.6;
   // Both the plate width and the top of the flame must fit the scene's own viewport.
   const distance = Math.max(z, 1.04 / (Math.tan(THREE.MathUtils.degToRad(16)) * aspect));
   camBase.pos.set(narrow ? 0 : 0.1, 1.4, distance);
-  camBase.look.set(0, 0.62, 0);
+  camBase.look.set(0, narrow ? 0.52 : 0.62, 0);
 }
 
 const camBase = { pos: new THREE.Vector3(), look: new THREE.Vector3() };
@@ -1995,11 +1752,18 @@ window.addEventListener('resize', resize);
 const stageResize = new ResizeObserver(resize);
 stageResize.observe(els.stage);
 
+let pageHidden = document.hidden;
 function onVisibilityChange() {
-  if (document.hidden) {
+  pageHidden = document.hidden;
+  if (pageHidden) {
+    cancelAnimationFrame(frameId);
     disableMic();
     audio.ctx?.suspend().catch(() => {});
-  } else if (!audio.muted) audio.ctx?.resume().catch(() => {});
+    return;
+  }
+  last = performance.now();
+  if (!audio.muted) audio.ctx?.resume().catch(() => {});
+  if (running) frameId = requestAnimationFrame(tick);
 }
 document.addEventListener('visibilitychange', onVisibilityChange);
 
@@ -2045,7 +1809,7 @@ function adaptQuality(dt) {
 let running = true;
 let frameId;
 function tick(now) {
-  if (!running) return;
+  if (!running || pageHidden) return;
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   time += dt;
@@ -2064,14 +1828,20 @@ function tick(now) {
     shadowTick = 0;
     renderer.shadowMap.needsUpdate = true;
   }
-  composer.render();
+  try {
+    composer.render();
+  } catch (error) {
+    console.error('Candle rendering failed:', error);
+    requestFlatFallback();
+    return;
+  }
   adaptQuality(dt);
   frameId = requestAnimationFrame(tick);
 }
 
 renderer.domElement.addEventListener('webglcontextlost', (event) => {
   event.preventDefault();
-  document.dispatchEvent(new Event('candle:render-failed'));
+  requestFlatFallback();
 });
 
 export function disposeScene() {
@@ -2099,4 +1869,4 @@ export function disposeScene() {
 window.addEventListener('pagehide', (event) => {
   if (!event.persisted) disposeScene();
 });
-frameId = requestAnimationFrame(tick);
+if (!pageHidden) frameId = requestAnimationFrame(tick);

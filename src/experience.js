@@ -2,7 +2,7 @@ import { gift } from './gift.js';
 
 const els = Object.fromEntries([
   'stage', 'status', 'hint', 'action', 'action-label', 'mute', 'sound-label', 'blow', 'blow-label',
-  'replay', 'note', 'fallback', 'opening', 'wishing', 'celebrate', 'greeting', 'scene-caption', 'secondary-actions',
+  'replay', 'note', 'fallback', 'opening', 'wishing', 'celebrate', 'greeting', 'scene-caption', 'secondary-actions', 'visual',
 ].map((id) => [id, document.getElementById(id)]));
 let handlers = {};
 let phase = 'welcome';
@@ -42,6 +42,13 @@ const states = {
   extinguishing: { status: '愿望已经许下', label: '愿望正在出发', caption: '嘘，有一封来信，正等着你。', hint: '愿你所愿，慢慢实现', disabled: true },
   ember: { status: '烛光化作余温', label: '再点一次烛光', caption: '让这一点余温，陪你走进新的一岁。', hint: '', disabled: false },
 };
+const sceneDescriptions = {
+  unlit: '生日蛋糕上插着一支等待点亮的蜡烛',
+  igniting: '生日蛋糕上的蜡烛正在点亮',
+  burning: '生日蛋糕上的蜡烛已点亮，可以许愿',
+  extinguishing: '蜡烛正在熄灭，愿望即将寄出',
+  ember: '生日蜡烛已熄灭，烛芯还留着余温',
+};
 
 function renderState(state) {
   currentState = state;
@@ -49,6 +56,7 @@ function renderState(state) {
   if (!ui) return;
   if ((state === 'igniting' || state === 'burning') && phase !== 'wish') showPhase('wish');
   document.documentElement.dataset.state = state;
+  els.visual.setAttribute('aria-label', sceneDescriptions[state]);
   els.status.textContent = ui.status;
   els.action.dataset.state = state;
   els['action-label'].textContent = phase === 'celebrate' ? '珍藏这份祝福' : ui.label;
@@ -69,7 +77,7 @@ function renderState(state) {
 function sound(muted) {
   document.documentElement.dataset.sound = muted ? 'off' : 'on';
   els.mute.setAttribute('aria-pressed', String(!muted));
-  els.mute.setAttribute('aria-label', muted ? '开启声音' : '关闭声音');
+  els.mute.setAttribute('aria-label', '声音');
   els['sound-label'].textContent = muted ? '开启声音' : '声音已开启';
 }
 

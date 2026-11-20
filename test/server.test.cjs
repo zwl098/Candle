@@ -3,7 +3,6 @@ const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const fs = require('node:fs');
 const http = require('node:http');
-const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const { before, after, test } = require('node:test');
@@ -12,9 +11,9 @@ let fixtureDirectory;
 let server;
 let port;
 
-function request(pathname) {
+function request(pathname, method = 'GET') {
   return new Promise((resolve, reject) => {
-    const req = http.get({ hostname: '127.0.0.1', port, path: pathname }, (res) => {
+    const req = http.request({ hostname: '127.0.0.1', port, path: pathname, method }, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (chunk) => { body += chunk; });
@@ -22,6 +21,7 @@ function request(pathname) {
     });
     req.on('error', reject);
     req.setTimeout(5000, () => req.destroy(new Error('request timed out')));
+    req.end();
   });
 }
 
@@ -49,28 +49,25 @@ before(async () => {
   fs.symlinkSync(privateDirectory, path.join(appDirectory, 'src', 'outside'), process.platform === 'win32' ? 'junction' : 'dir');
   fs.symlinkSync(path.join(appDirectory, '.git'), path.join(appDirectory, 'src', 'internal'), process.platform === 'win32' ? 'junction' : 'dir');
 
-  const probe = net.createServer();
-  probe.listen(0, '127.0.0.1');
-  await once(probe, 'listening');
-  port = probe.address().port;
-  await new Promise((resolve) => probe.close(resolve));
-
   server = spawn(process.execPath, ['--preserve-symlinks-main', path.join(appDirectory, 'server.js')], {
     cwd: appDirectory,
-    env: { ...process.env, PORT: String(port) },
+    env: { ...process.env, PORT: '0' },
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5000);
   try {
-    await Promise.race([
+    const [startupMessage] = await Promise.race([
       once(server.stdout, 'data', { signal: controller.signal }),
       once(server, 'exit', { signal: controller.signal }).then(([code]) => {
         throw new Error(`server exited during startup: ${code}`);
       }),
       once(server, 'error', { signal: controller.signal }).then(([error]) => { throw error; }),
     ]);
+    const match = startupMessage.toString().match(/http:\/\/127\.0\.0\.1:(\d+)/);
+    assert.ok(match, 'server should report its listening port');
+    port = Number(match[1]);
   } finally {
     clearTimeout(timer);
     controller.abort();
@@ -96,6 +93,7 @@ test('serves entry pages and public JavaScript with the correct MIME types', asy
     const res = await request(pathname);
     assert.equal(res.status, 200, pathname);
     assert.match(res.headers['content-type'], /^text\/html/);
+    assert.equal(res.headers['x-content-type-options'], 'nosniff');
   }
   for (const pathname of ['/src/main.js', '/vendor/library.mjs']) {
     const res = await request(pathname);
@@ -103,6 +101,17 @@ test('serves entry pages and public JavaScript with the correct MIME types', asy
     assert.match(res.headers['content-type'], /^text\/javascript/);
   }
   assert.equal((await request('/src/missing.js')).status, 404);
+});
+
+test('supports HEAD without a response body and rejects other HTTP methods', async () => {
+  const head = await request('/src/main.js', 'HEAD');
+  assert.equal(head.status, 200);
+  assert.match(head.headers['content-type'], /^text\/javascript/);
+  assert.equal(head.body, '');
+
+  const post = await request('/', 'POST');
+  assert.equal(post.status, 405);
+  assert.equal(post.headers.allow, 'GET, HEAD');
 });
 
 test('returns 400 for malformed encodings and null bytes, and keeps serving requests', async () => {

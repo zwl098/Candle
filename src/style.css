@@ -18,6 +18,7 @@ body { margin: 0; color: var(--ink); background: var(--bg); font-family: var(--s
 button, a { -webkit-tap-highlight-color: transparent; }
 button { font: inherit; cursor: pointer; touch-action: manipulation; }
 button:focus-visible, a:focus-visible { outline: 2px solid var(--gold); outline-offset: 6px; }
+#wish-title:focus-visible { outline: 2px solid var(--gold); outline-offset: 8px; }
 button:disabled { cursor: wait; opacity: .6; }
 button, a { transition: color .2s, background .2s, border-color .2s, opacity .25s, transform .25s; }
 button:active:not(:disabled) { transform: translateY(1px); }

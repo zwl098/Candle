@@ -27,12 +27,22 @@ function isPublicFile(file) {
   return publicFiles.has(relative) || publicDirectories.has(segments[0]);
 }
 
-function sendError(res, status, message) {
-  res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8' });
+function sendError(res, status, message, headers = {}) {
+  res.writeHead(status, {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+    ...headers,
+  });
   res.end(message);
 }
 
 const server = http.createServer((req, res) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    sendError(res, 405, 'method not allowed', { Allow: 'GET, HEAD' });
+    return;
+  }
+
   let pathname;
   try {
     pathname = decodeURIComponent(new URL(req.url, 'http://127.0.0.1').pathname);
@@ -67,14 +77,21 @@ const server = http.createServer((req, res) => {
       }
       res.writeHead(200, {
         'Content-Type': types[path.extname(file)] || 'application/octet-stream',
+        'Content-Length': data.length,
         'Cache-Control': 'no-cache',
+        'X-Content-Type-Options': 'nosniff',
+        'Referrer-Policy': 'no-referrer',
       });
-      res.end(data);
+      res.end(req.method === 'HEAD' ? undefined : data);
     });
   });
 });
 
-const port = Number(process.env.PORT) || 5173;
+const portValue = process.env.PORT;
+const configuredPort = portValue === undefined || portValue.trim() === '' ? 5173 : Number(portValue);
+const port = Number.isInteger(configuredPort) && configuredPort >= 0 && configuredPort <= 65535
+  ? configuredPort
+  : 5173;
 server.listen(port, '127.0.0.1', () => {
-  console.log(`candle  http://127.0.0.1:${port}`);
+  console.log(`candle  http://127.0.0.1:${server.address().port}`);
 });
