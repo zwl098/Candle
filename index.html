@@ -1,13 +1,15 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-phase="welcome" data-ready="false" data-sound="off">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="dark" />
-  <title>生日烛火</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect fill='%23070605' width='32' height='32'/%3E%3Cpath fill='%23ffb15a' d='M16 4c2 4 3 6 3 8a3 3 0 1 1-6 0c0-2 1-4 3-8z'/%3E%3Crect fill='%23e6d3b0' x='14.2' y='16' width='3.6' height='12' rx='1.2'/%3E%3C/svg%3E" />
+  <meta name="theme-color" content="#100d0b" />
+  <meta name="description" content="点亮一根蜡烛，许一个小小的愿望。这里有一封只属于你的生日来信。" />
+  <title>烛光来信 · 一份给你的生日祝福</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect fill='%23100d0b' width='32' height='32' rx='8'/%3E%3Cpath fill='%23e8c78f' d='M16 4c2 4 3 6 3 8a3 3 0 1 1-6 0c0-2 1-4 3-8z'/%3E%3Crect fill='%23e6d3b0' x='14.2' y='16' width='3.6' height='12' rx='1.2'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="./src/style.css" />
-  <!-- 火焰与场景为原创实现。Three.js r170（MIT，见 vendor/THREE.LICENSE）；GSAP 3.15（GreenSock Standard License）；canvas-confetti 1.9（ISC，见 vendor/canvas-confetti/LICENSE） -->
+  <!-- Three.js r170 (MIT), GSAP 3.15.1, canvas-confetti 1.9.4. Libraries and licenses are kept in vendor. -->
   <script type="importmap">
   {
     "imports": {
@@ -21,40 +23,77 @@
   </script>
 </head>
 <body>
-  <div id="stage"></div>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="wordmark" href="./" aria-label="烛光来信，回到开场">
+        <svg viewBox="0 0 24 32" fill="none" aria-hidden="true"><path d="M12 2c0 5-5 7-5 11a5 5 0 0 0 10 0c0-3-2-6-5-11Z" stroke="currentColor" stroke-width="1.2"/><path d="M8.5 21h7v9h-7zM12 17v4" stroke="currentColor" stroke-width="1.2"/></svg>
+        <span>烛光来信<small>A LITTLE LIGHT FOR YOU</small></span>
+      </a>
+      <button type="button" id="mute" class="sound-button" aria-pressed="false" aria-label="开启声音">
+        <svg class="sound-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m11 5-5 4H3v6h3l5 4V5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path class="sound-waves" d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path class="sound-slash" d="m16 10 4 4m0-4-4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        <span id="sound-label">开启声音</span>
+      </button>
+    </header>
+    <main class="layout">
+      <div class="story" id="story">
+        <section id="opening" class="story-panel" aria-labelledby="opening-title">
+          <p class="eyebrow"><span class="small-line"></span> 一份只属于你的生日祝福</p>
+          <h1 id="opening-title"><span class="recipient-line" data-recipient>亲爱的你</span><span>愿这一岁，</span><em>心有微光。</em></h1>
+          <p class="story-description" id="dedication">日子很长，值得被温柔以待。<br>今晚，先为自己点亮一束光。</p>
+          <p class="from-line"><span>WITH LOVE</span><span data-sender>一直惦记你的人</span></p>
+        </section>
+        <section id="wishing" class="story-panel" aria-labelledby="wishing-title" hidden>
+          <p class="eyebrow"><span class="small-line"></span> 把这一刻，留给自己</p>
+          <h2 id="wishing-title"><span>闭上眼睛，</span><em>许个愿吧。</em></h2>
+          <p class="story-description">愿望不用说出口。<br>慢慢来，这一刻属于你。</p>
+          <p class="quiet-caption"><span class="live-dot" aria-hidden="true"></span> 烛光在听，世界可以等一等。</p>
+        </section>
+        <section id="celebrate" class="story-panel letter" aria-labelledby="wish-title" hidden>
+          <p class="eyebrow"><span class="small-line"></span> 愿你的每一岁，都有光</p>
+          <p class="letter-to"><span data-recipient>亲爱的你</span>，</p>
+          <h2 id="wish-title" class="wish-title" tabindex="-1">生日快乐。</h2>
+          <p class="wish-en">A little wish. A whole lot of love.</p>
+          <div class="wish-message" id="wish-message"></div>
+          <div class="letter-signature"><span>把最好的祝福，都送给你</span><strong data-sender>一直惦记你的人</strong><span class="signature-rule" aria-hidden="true"></span></div>
+        </section>
+      </div>
+      <div class="visual" id="visual" aria-label="生日蛋糕与蜡烛">
+        <div class="scene-halo" aria-hidden="true"></div>
+        <div id="stage" aria-hidden="true"></div>
+        <div class="flat-scene" aria-hidden="true">
+          <div class="flat-flame"></div><div class="flat-wick"></div><div class="flat-candle"></div>
+          <div class="flat-cake"><i></i><i></i><i></i></div><div class="flat-plate"></div>
+        </div>
+        <span class="scene-caption" id="scene-caption" aria-hidden="true">一点微光，万千心意</span>
+      </div>
+      <div class="controls" id="controls">
+        <p class="action-caption" id="greeting">让今天，从一个小小的仪式开始。</p>
+        <button type="button" id="action" class="primary-button" aria-describedby="hint" disabled>
+          <span id="action-label">正在准备烛光</span>
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 12h15m-5-5 5 5-5 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="secondary-actions" id="secondary-actions" hidden>
+          <button type="button" id="blow" class="text-button" aria-pressed="false" hidden><span class="mic-indicator" aria-hidden="true"></span><span id="blow-label">试试吹气</span></button>
+          <button type="button" id="replay" class="text-button" hidden>再许一次愿 <span aria-hidden="true">↗</span></button>
+        </div>
+        <p id="hint" class="hint">正在准备你的生日烛光…</p>
+        <p id="note" class="note" role="status"></p>
+        <p id="status" class="sr-only" role="status">正在准备</p>
+        <p id="fallback" class="fallback-note" hidden>为你留一盏温柔的光，一样可以许愿。</p>
+      </div>
+    </main>
+    <footer class="page-footer">
+      <p>把平凡的一天，变成值得记住的一天。</p>
+      <ol class="chapters" aria-label="生日祝福进度">
+        <li aria-current="step"><span>01</span> 相遇</li><li><span>02</span> 许愿</li><li><span>03</span> 祝福</li>
+      </ol>
+    </footer>
+  </div>
+  <canvas id="confetti" aria-hidden="true"></canvas>
   <div class="vignette" aria-hidden="true"></div>
   <div class="grain" aria-hidden="true"></div>
-  <canvas id="confetti" aria-hidden="true"></canvas>
-
-  <section id="celebrate" aria-live="polite">
-    <h1 class="wish-title">生日快乐</h1>
-    <div class="wish-sub">
-      <span class="wish-rule"></span>
-      <p class="wish-en">Happy Birthday</p>
-      <p class="wish-line">愿你所愿，皆得所愿</p>
-    </div>
-  </section>
-
   <div id="curtain" aria-hidden="true"></div>
-
-  <header class="topbar chrome">
-    <div class="tools">
-      <button type="button" id="blow" aria-pressed="false">吹气熄灭</button>
-      <button type="button" id="mute" aria-pressed="false">静音</button>
-    </div>
-  </header>
-
-  <div class="bottom chrome">
-    <p id="greeting" aria-hidden="true">闭上眼睛，许一个愿望</p>
-    <p id="status" role="status">未燃</p>
-    <p id="hint">点击烛芯，或按 Enter / 空格</p>
-    <button type="button" id="action" aria-describedby="hint">点燃</button>
-    <p id="note" role="status"></p>
-  </div>
-
-  <p class="credit chrome">原创火焰体积着色器 · Three.js · GSAP · canvas-confetti</p>
-
-  <p id="fallback" hidden>需要 WebGL 才能渲染这根蜡烛。</p>
-  <script type="module" src="./src/main.js"></script>
+  <noscript><p class="noscript-note">这封生日来信需要启用 JavaScript。愿你的每一岁，都有光。</p></noscript>
+  <script type="module" src="./src/app.js"></script>
 </body>
 </html>

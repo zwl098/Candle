@@ -9,6 +9,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { gsap } from 'gsap';
 import { SplitText } from 'gsap/SplitText.js';
 import confetti from 'canvas-confetti';
+import { view } from './experience.js';
 
 gsap.registerPlugin(SplitText);
 
@@ -25,24 +26,7 @@ const EXTING_DUR = 1.02;
 const EMBER_DUR = 2.7;
 const SMOKE_DUR = 2.75;
 
-const UI = {
-  unlit: { status: '未燃', button: '点燃蜡烛', disabled: false, hint: '点击烛芯，或按 Enter / 空格' },
-  igniting: { status: '点燃中', button: '点燃中', disabled: true, hint: '火苗正从烛芯升起' },
-  burning: { status: '燃烧中', button: '吹灭蜡烛', disabled: false, hint: '许完愿，点击火焰或按空格吹灭' },
-  extinguishing: { status: '愿望已许下', button: '吹灭中', disabled: true, hint: '火苗侧倒，随后散成烟' },
-  ember: { status: '余烬', button: '再点一次', disabled: false, hint: '烛芯还有余热，可再次点燃' },
-};
-
-const els = {
-  stage: document.getElementById('stage'),
-  status: document.getElementById('status'),
-  hint: document.getElementById('hint'),
-  action: document.getElementById('action'),
-  mute: document.getElementById('mute'),
-  blow: document.getElementById('blow'),
-  note: document.getElementById('note'),
-  fallback: document.getElementById('fallback'),
-};
+const els = view.els;
 
 const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
 let reduceMotion = motionQuery.matches;
@@ -54,8 +38,9 @@ let leanSign = 1;
 let smokeT = -1;
 let smokeKill = false;
 let smokeLean = 0.12;
+let celebrationPending = false;
 
-const audio = { ctx: null, master: null, noise: null, music: null, voices: [], muted: false, nextCrackle: 0 };
+const audio = { ctx: null, master: null, noise: null, music: null, voices: [], muted: true, nextCrackle: 0 };
 const mic = {
   on: false,
   stream: null,
@@ -65,6 +50,7 @@ const mic = {
   baseline: 0.02,
   hold: 0,
   arm: 0,
+  request: 0,
 };
 
 function clamp(v, a, b) { return Math.min(b, Math.max(a, v)); }
@@ -91,15 +77,8 @@ function setNote(text) {
 }
 
 function updateUI() {
-  const ui = UI[state];
-  els.status.textContent = ui.status;
-  els.action.textContent = ui.button;
-  els.action.disabled = ui.disabled;
-  els.action.dataset.state = state;
-  let hint = ui.hint;
-  if (mic.on && state === 'burning') hint = '许完愿，对着麦克风吹一口气';
-  els.hint.textContent = hint;
-  document.documentElement.dataset.state = state;
+  view.renderState(state);
+  if (mic.on && state === 'burning') els.hint.textContent = '对着麦克风轻轻吹一口气';
   document.documentElement.dataset.motion = reduceMotion ? 'reduce' : 'full';
 }
 
@@ -117,7 +96,7 @@ function unlockAudio() {
     for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
     audio.noise = buf;
   }
-  if (audio.ctx.state === 'suspended') audio.ctx.resume();
+  if (audio.ctx.state === 'suspended') audio.ctx.resume().catch(() => {});
 }
 
 function tone(freq, dur, type, gain) {
@@ -267,19 +246,33 @@ function playCrackle() {
 }
 
 async function enableMic() {
+  if (state !== 'burning') return;
   if (!navigator.mediaDevices?.getUserMedia) {
     setNote('无法使用麦克风，请用熄灭按钮');
     return;
   }
   els.blow.disabled = true;
-  els.blow.textContent = '正在请求…';
+  els['blow-label'].textContent = '等待麦克风…';
+  const request = ++mic.request;
+  let stream;
+  let ctx;
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
+    stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
       video: false,
     });
+    if (request !== mic.request || state !== 'burning') {
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
     const Ctx = window.AudioContext || window.webkitAudioContext;
-    const ctx = new Ctx();
+    ctx = new Ctx();
+    await ctx.resume();
+    if (request !== mic.request || state !== 'burning') {
+      stream.getTracks().forEach((track) => track.stop());
+      await ctx.close();
+      return;
+    }
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 1024;
     const source = ctx.createMediaStreamSource(stream);
@@ -292,28 +285,35 @@ async function enableMic() {
     mic.baseline = 0.02;
     mic.hold = 0;
     mic.arm = time + 0.5;
-    els.blow.textContent = '关闭吹气';
-    els.blow.setAttribute('aria-pressed', 'true');
-    setNote('麦克风只在本机分析，不会录音或上传');
+    view.mic(true);
+    setNote('仅在本机感受声音，吹灭后会自动关闭麦克风。');
     updateUI();
   } catch {
-    setNote('无法使用麦克风，请用熄灭按钮');
-    els.blow.textContent = '吹气熄灭';
-    els.blow.setAttribute('aria-pressed', 'false');
+    stream?.getTracks().forEach((track) => track.stop());
+    if (ctx) ctx.close().catch(() => {});
+    if (request === mic.request) {
+      setNote('暂时听不到你的声音，点击按钮也能吹灭。');
+      view.mic(false);
+    }
   } finally {
-    els.blow.disabled = false;
+    if (request === mic.request) {
+      els.blow.disabled = false;
+      if (!mic.on) view.mic(false);
+    }
   }
 }
 
 function disableMic() {
+  mic.request++;
   mic.on = false;
+  els.blow.disabled = false;
   if (mic.stream) mic.stream.getTracks().forEach((t) => t.stop());
   if (mic.ctx) mic.ctx.close().catch(() => {});
   mic.stream = null;
   mic.ctx = null;
   mic.analyser = null;
-  els.blow.textContent = '吹气熄灭';
-  els.blow.setAttribute('aria-pressed', 'false');
+  view.mic(false);
+  els.blow.style.removeProperty('--mic-level');
   setNote('');
   updateUI();
 }
@@ -327,6 +327,7 @@ function sampleBlow(dt) {
   let sum = 0;
   for (let i = 0; i < mic.buf.length; i++) sum += mic.buf[i] * mic.buf[i];
   const rms = Math.sqrt(sum / mic.buf.length);
+  els.blow.style.setProperty('--mic-level', String(clamp(rms * 12, 0.2, 1)));
   mic.baseline += (rms - mic.baseline) * 0.018;
   if (rms - mic.baseline > 0.05 && rms > 0.07) {
     mic.hold += dt;
@@ -735,12 +736,11 @@ try {
     powerPreference: 'high-performance',
   });
 } catch {
-  els.fallback.hidden = false;
   throw new Error('webgl unavailable');
 }
 
 if (!renderer.capabilities.isWebGL2) {
-  els.fallback.hidden = false;
+  renderer.dispose();
   throw new Error('webgl2 required');
 }
 
@@ -750,7 +750,7 @@ renderer.debug.onShaderError = (gl, program, _vs, fs) => {
   setNote('着色器编译失败');
 };
 
-const ROOM_BG = 0x0a0807;
+const ROOM_BG = 0x100d0b;
 const AMBIENT_TINT = new THREE.Color('#ffe3c6');
 
 renderer.setClearColor(ROOM_BG, 1);
@@ -801,9 +801,9 @@ const floor = new THREE.Mesh(
   new THREE.CircleGeometry(6, 96),
   new THREE.MeshStandardMaterial({
     color: 0x080605,
-    roughness: 0.4,
+    roughness: 1,
     metalness: 0,
-    envMapIntensity: 0.05,
+    envMapIntensity: 0,
   })
 );
 floor.rotation.x = -Math.PI / 2;
@@ -1001,7 +1001,7 @@ const creamMat = new THREE.MeshPhysicalMaterial({
   sheenRoughness: 0.4,
   sheenColor: new THREE.Color('#ffd7a8'),
   bumpMap: makeFrostBump(),
-  bumpScale: 0.9,
+  bumpScale: 0.012,
 });
 const ganacheMat = new THREE.MeshPhysicalMaterial({
   color: GANACHE,
@@ -1317,88 +1317,7 @@ smokeMesh.visible = false;
 smokeMesh.renderOrder = 4;
 scene.add(smokeMesh);
 
-const BULB_TINTS = ['#ffd9a6', '#ffc88a', '#ffe7cb', '#f7b9a2', '#ffd08f'];
-const BULB_N = 38;
-const bulbPos = new Float32Array(BULB_N * 3);
-const bulbCol = new Float32Array(BULB_N * 3);
-const bulbSeed = new Float32Array(BULB_N);
-const bulbAlong = new Float32Array(BULB_N);
-const bulbSize = new Float32Array(BULB_N);
-const tint = new THREE.Color();
-for (let i = 0; i < BULB_N; i++) {
-  const x = (hash1(i * 1.7) - 0.5) * 6.4;
-  const y = 0.2 + hash1(i * 3.1 + 2) ** 1.2 * 2.4;
-  const z = -1.4 - hash1(i * 5.9 + 4) * 2.8;
-  bulbPos.set([x, y, z], i * 3);
-  tint.set(BULB_TINTS[i % BULB_TINTS.length]);
-  bulbCol.set([tint.r, tint.g, tint.b], i * 3);
-  bulbSeed[i] = hash1(i * 3.7);
-  bulbAlong[i] = (x + 3.2) / 6.4;
-  bulbSize[i] = 0.55 + hash1(i * 8.3 + 1) * 1.15;
-}
-const bulbGeo = new THREE.BufferGeometry();
-bulbGeo.setAttribute('position', new THREE.BufferAttribute(bulbPos, 3));
-bulbGeo.setAttribute('color', new THREE.BufferAttribute(bulbCol, 3));
-bulbGeo.setAttribute('seed', new THREE.BufferAttribute(bulbSeed, 1));
-bulbGeo.setAttribute('along', new THREE.BufferAttribute(bulbAlong, 1));
-bulbGeo.setAttribute('sz', new THREE.BufferAttribute(bulbSize, 1));
-const bulbUniforms = {
-  uTime: { value: 0 },
-  uLevel: { value: 0 },
-  uChase: { value: 0 },
-  uChaseAmt: { value: 0 },
-  uSize: { value: 1 },
-  uCalm: { value: 0 },
-};
-const bulbs = new THREE.Points(bulbGeo, new THREE.ShaderMaterial({
-  uniforms: bulbUniforms,
-  transparent: true,
-  depthWrite: false,
-  blending: THREE.AdditiveBlending,
-  toneMapped: false,
-  vertexShader: /* glsl */ `
-    attribute vec3 color;
-    attribute float seed;
-    attribute float along;
-    attribute float sz;
-    uniform float uTime;
-    uniform float uLevel;
-    uniform float uChase;
-    uniform float uChaseAmt;
-    uniform float uSize;
-    uniform float uCalm;
-    varying vec3 vColor;
-    void main() {
-      float drift = 1.0 - uCalm * 0.85;
-      vec3 p = position;
-      p.y += sin(uTime * (0.09 + seed * 0.1) + seed * 40.0) * 0.1 * drift;
-      p.x += cos(uTime * (0.07 + seed * 0.08) + seed * 17.0) * 0.07 * drift;
-      float tw = 0.8 + 0.2 * sin(uTime * (0.5 + seed * 1.2) + seed * 40.0);
-      tw = mix(tw, 0.9, uCalm);
-      float wave = exp(-pow((fract(along - uChase) - 0.5) * 6.0, 2.0));
-      float glow = uLevel * tw + uChaseAmt * wave * 2.0;
-      vColor = color * glow;
-      vec4 mv = modelViewMatrix * vec4(p, 1.0);
-      gl_PointSize = uSize * sz * (0.14 + 0.05 * wave * uChaseAmt) / -mv.z;
-      gl_Position = projectionMatrix * mv;
-    }
-  `,
-  fragmentShader: /* glsl */ `
-    varying vec3 vColor;
-    void main() {
-      vec2 c = gl_PointCoord - 0.5;
-      float d = length(c) * 2.0;
-      float disc = smoothstep(1.0, 0.9, d);
-      float rim = smoothstep(0.55, 0.92, d) * disc;
-      float core = smoothstep(0.7, 0.0, d);
-      float a = disc * 0.1 + rim * 0.15 + core * 0.08;
-      if (a < 0.004) discard;
-      gl_FragColor = vec4(vColor * a, 1.0);
-    }
-  `,
-}));
-bulbs.renderOrder = 2;
-scene.add(bulbs);
+const roomLight = { level: 0 };
 
 const CONFETTI_COLORS = ['#f6cd7c', '#ffe8c2', '#f2b48a', '#ffd9b0'];
 const confettiGeo = new THREE.PlaneGeometry(0.03, 0.016);
@@ -1609,7 +1528,7 @@ function applyPose(p, dt) {
 
   poolLight.material.opacity = p.light * 0.07;
   poolLight.scale.setScalar(0.95 + p.light * 0.08);
-  const room = bulbUniforms.uLevel.value;
+  const room = roomLight.level;
   hemi.intensity = 0.04 + room * 0.1;
   garlandLight.intensity = room * 0.55;
   const amb = 0.05 + room * 0.15 + (1 - clamp(p.light, 0, 1)) * 0.03;
@@ -1623,9 +1542,6 @@ function applyPose(p, dt) {
   }
   poolMat.uniforms.uEmit.value = p.light * 0.55 + p.ember * 0.22;
   stepConfetti(p, dt);
-  bulbUniforms.uTime.value = time;
-  bulbUniforms.uCalm.value = p.calm ? 1 : 0;
-  if (bulbUniforms.uChaseAmt.value > 0.001) bulbUniforms.uChase.value += dt * (p.calm ? 0.12 : 0.55);
   flameDepthProxy.scale.set(Math.max(p.width, 0.3), Math.max(flameH, 0.001), Math.max(p.width, 0.3));
   flameDepthProxy.position.x = p.lean * 0.5;
   const wickGlow = state === 'ember' ? p.ember * 0.75 : Math.max(0, p.wick) * 0.42;
@@ -1684,7 +1600,7 @@ function setState(next) {
 }
 
 const rig = { dolly: 0, lift: 0, orbit: 0, aim: 0 };
-const BULB_REST = 0.24;
+const ROOM_LIGHT_REST = 0.24;
 
 function moveRig(vars, duration, ease = 'power2.inOut') {
   gsap.killTweensOf(rig);
@@ -1692,30 +1608,33 @@ function moveRig(vars, duration, ease = 'power2.inOut') {
   else gsap.to(rig, { ...vars, duration, ease });
 }
 
-function setBulbs(level, duration) {
-  gsap.to(bulbUniforms.uLevel, { value: level, duration, ease: 'sine.inOut', overwrite: true });
+function setRoomLight(level, duration) {
+  gsap.to(roomLight, { level: level, duration, ease: 'sine.inOut', overwrite: true });
 }
 
 function startIgnite() {
   if (state !== 'unlit' && state !== 'ember') return;
+  celebrationPending = false;
   unlockAudio();
   playIgnite();
   smokeKill = smokeT >= 0;
   for (const piece of confettiPieces) {
-    if (!piece.ambient) spawnConfetti(piece, 'burst');
+    piece.active = false;
   }
+  confettiFx.reset();
+  if (celebrationLightTl) celebrationLightTl.kill();
   if (celebrateTl) {
     celebrateTl.kill();
     celebrateTl = null;
-    gsap.to(celebrateEl, { autoAlpha: 0, duration: 0.4, overwrite: true });
   }
-  moveRig({ dolly: 0.62, lift: -0.08, orbit: 0, aim: 0 }, 2.8);
-  setBulbs(0.16, 1.6);
+  moveRig({ dolly: 0.2, lift: -0.02, orbit: 0, aim: 0 }, 2.2);
+  setRoomLight(0.16, 1.6);
   setState('igniting');
 }
 
 function startExtinguish() {
   if (state !== 'burning') return;
+  disableMic();
   unlockAudio();
   playExtinguish();
   stopMelody();
@@ -1724,54 +1643,41 @@ function startExtinguish() {
   smokeT = 0;
   smokeKill = false;
   smokeUniforms.uLean.value = smokeLean;
+  celebrationPending = true;
   setState('extinguishing');
-  gsap.delayedCall(0.55, celebrate);
 }
 
 const CONFETTI_PALETTE = ['#f6cd7c', '#ffe8c2', '#f2b48a', '#fff3e2', '#e9c58a', '#f7d9d0'];
 const confettiFx = confetti.create(document.getElementById('confetti'), { resize: true, useWorker: true });
 const celebrateEl = document.getElementById('celebrate');
 const wishTitle = celebrateEl.querySelector('.wish-title');
-const wishSub = celebrateEl.querySelector('.wish-sub');
+const wishSub = celebrateEl.querySelector('.wish-message');
 let wishSplit = null;
 let celebrateTl = null;
+let celebrationLightTl = null;
 const cakeScreen = new THREE.Vector3();
 
 function cakeOrigin() {
   cakeScreen.set(0, TOP_Y, 0).project(camera);
-  return { x: (cakeScreen.x + 1) / 2, y: (1 - cakeScreen.y) / 2 };
+  const rect = els.stage.getBoundingClientRect();
+  return { x: (rect.left + (cakeScreen.x + 1) / 2 * rect.width) / window.innerWidth, y: (rect.top + (1 - cakeScreen.y) / 2 * rect.height) / window.innerHeight };
 }
 
 function fireConfetti() {
   const base = { colors: CONFETTI_PALETTE, shapes: ['square', 'circle'], disableForReducedMotion: true };
-  confettiFx({ ...base, particleCount: 110, spread: 76, startVelocity: 40, scalar: 0.95, ticks: 280, origin: cakeOrigin() });
-  const cannon = (x, angle, delay) => gsap.delayedCall(delay, () => confettiFx({
-    ...base,
-    particleCount: 70,
-    angle,
-    spread: 58,
-    startVelocity: 62,
-    drift: x < 0.5 ? 0.4 : -0.4,
-    ticks: 340,
-    origin: { x, y: 0.92 },
-  }));
-  cannon(0, 62, 0.18);
-  cannon(1, 118, 0.3);
-  cannon(0.08, 70, 0.95);
-  cannon(0.92, 110, 1.05);
+  confettiFx({ ...base, particleCount: 85, spread: 100, startVelocity: 28, scalar: 0.75, gravity: 0.65, ticks: 190, origin: cakeOrigin() });
 }
 
 function celebrate() {
+  celebrationPending = false;
+  view.celebrate();
   playCelebrate();
   if (!reduceMotion) fireConfetti();
 
-  bulbUniforms.uChase.value = 0;
-  gsap.timeline({ overwrite: true })
-    .to(bulbUniforms.uLevel, { value: 0.9, duration: 0.8, ease: 'power2.out' })
-    .to(bulbUniforms.uChaseAmt, { value: reduceMotion ? 0 : 1, duration: 0.4 }, 0)
-    .to(bulbUniforms.uChaseAmt, { value: 0, duration: 1.4, ease: 'sine.inOut' }, 4.2)
-    .to(bulbUniforms.uLevel, { value: BULB_REST, duration: 2.2, ease: 'sine.inOut' }, 4.2);
-  moveRig({ dolly: -0.25, lift: 0.08, orbit: 0, aim: 0.26 }, 1.6, 'power3.out');
+  celebrationLightTl = gsap.timeline()
+    .to(roomLight, { level: 0.48, duration: 0.8, ease: 'power2.out' })
+    .to(roomLight, { level: ROOM_LIGHT_REST, duration: 2.2, ease: 'sine.inOut' }, 4.2);
+  moveRig({ dolly: -0.12, lift: 0.02, orbit: 0, aim: 0 }, 1.6, 'power3.out');
 
   if (celebrateTl) celebrateTl.kill();
   if (!wishSplit) wishSplit = new SplitText(wishTitle, { type: 'chars', charsClass: 'char' });
@@ -1784,34 +1690,25 @@ function celebrate() {
     celebrateTl
       .fromTo(wishSplit.chars, {
         yPercent: 90,
-        rotateX: -80,
-        scale: 0.6,
+        rotateX: -15,
+        scale: 0.97,
         autoAlpha: 0,
-        filter: 'blur(10px)',
+        filter: 'blur(4px)',
       }, {
         yPercent: 0,
         rotateX: 0,
         scale: 1,
         autoAlpha: 1,
         filter: 'blur(0px)',
-        duration: 1.1,
-        ease: 'back.out(1.7)',
-        stagger: 0.1,
+        duration: 0.9,
+        ease: 'power3.out',
+        stagger: 0.07,
       })
       .fromTo(wishSub,
         { y: 14, autoAlpha: 0, filter: 'blur(6px)' },
         { y: 0, autoAlpha: 1, filter: 'blur(0px)', duration: 0.9, ease: 'power2.out' },
-        '-=0.5')
-      .to(wishSplit.chars, {
-        keyframes: { y: [0, -8, 0] },
-        duration: 1.2,
-        ease: 'sine.inOut',
-        stagger: { each: 0.08, repeat: 1 },
-      }, '+=0.2');
+        '-=0.5');
   }
-  celebrateTl
-    .to(celebrateEl, { autoAlpha: 0, y: -18, duration: 1.1, ease: 'power2.in' }, reduceMotion ? 4.5 : '+=0.6')
-    .add(() => moveRig({ dolly: 0, lift: 0, orbit: 0, aim: 0 }, 2.6), '-=0.6');
 }
 
 function primary() {
@@ -1832,6 +1729,7 @@ function stepState(dt) {
   }
   if (state === 'igniting' && stateT >= IGNITE_DUR) setState('burning');
   else if (state === 'extinguishing' && stateT >= EXTING_DUR) setState('ember');
+  else if (state === 'ember' && celebrationPending && stateT >= 0.45) celebrate();
   else if (state === 'ember' && stateT >= EMBER_DUR) {
     setState('unlit');
     wickTip.material.emissiveIntensity = 0;
@@ -1842,17 +1740,15 @@ function stepState(dt) {
 }
 
 function frameCamera() {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
-  const narrow = w < 760;
-  const short = h < 540;
-  const portrait = narrow && h > w * 1.15;
-  camera.fov = portrait ? 42 : narrow ? (short ? 40 : 36) : 32;
-  const z = portrait ? 5.4 : narrow ? (short ? 4.9 : 4.5) : 4.0;
-  const camY = portrait ? 1.55 : narrow ? (short ? 1.3 : 1.4) : 1.4;
-  const lookY = portrait ? 0.62 : narrow ? (short ? 0.34 : 0.36) : 0.58;
-  camBase.pos.set(portrait ? 0 : narrow ? 0.04 : 0.18, camY, z);
-  camBase.look.set(0, lookY, 0);
+  const narrow = window.innerWidth <= 760;
+  const { width, height } = els.stage.getBoundingClientRect();
+  const aspect = width / Math.max(height, 1);
+  camera.fov = 32;
+  const z = narrow ? 3.0 : 3.6;
+  // Both the plate width and the top of the flame must fit the scene's own viewport.
+  const distance = Math.max(z, 1.04 / (Math.tan(THREE.MathUtils.degToRad(16)) * aspect));
+  camBase.pos.set(narrow ? 0 : 0.1, 1.4, distance);
+  camBase.look.set(0, 0.62, 0);
 }
 
 const camBase = { pos: new THREE.Vector3(), look: new THREE.Vector3() };
@@ -1862,7 +1758,7 @@ const camLook = new THREE.Vector3();
 const focusTarget = new THREE.Vector3(0, TOP_Y - 0.04, 0);
 
 function updateCamera(dt) {
-  const follow = reduceMotion ? 0 : 1 - Math.exp(-dt * 2.2);
+  const follow = reduceMotion ? 1 : 1 - Math.exp(-dt * 2.2);
   pointer.sx += ((reduceMotion ? 0 : pointer.x) - pointer.sx) * follow;
   pointer.sy += ((reduceMotion ? 0 : pointer.y) - pointer.sy) * follow;
   const drift = reduceMotion ? 0 : Math.sin(time * 0.21) * 0.025;
@@ -1946,17 +1842,18 @@ let bloomPass;
 let focusPass = null;
 function setupComposer() {
   const pr = Math.min(window.devicePixelRatio || 1, window.innerWidth < 760 ? 1.25 : 1.5);
+  const { width, height } = els.stage.getBoundingClientRect();
   renderer.setPixelRatio(pr);
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setSize(width, height);
   composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
   focusPass = new FocusPass(scene, camera, { focus: 4, aperture: 0.02, maxblur: 0.034, range: 0.7 }, [
-    flameMesh, smokeMesh, wickHit, dust, bulbs, poolLight, contact,
+    flameMesh, smokeMesh, wickHit, dust, poolLight, contact,
     ...confettiPieces.map((piece) => piece.mesh),
   ]);
   composer.addPass(focusPass);
   bloomPass = new UnrealBloomPass(
-    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    new THREE.Vector2(width, height),
     0.22,
     0.78,
     1.05
@@ -1970,8 +1867,8 @@ function setupComposer() {
 let prCap = 2;
 let tier = 0;
 function resize() {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
+  const w = Math.max(1, els.stage.clientWidth);
+  const h = Math.max(1, els.stage.clientHeight);
   const pr = Math.min(window.devicePixelRatio || 1, w < 760 ? 1.25 : 1.5, prCap);
   renderer.setPixelRatio(pr);
   renderer.setSize(w, h);
@@ -1980,18 +1877,12 @@ function resize() {
   camera.aspect = w / h;
   frameCamera();
   camera.updateProjectionMatrix();
-  updateBulbSize();
   const coarse = window.matchMedia('(pointer: coarse)').matches;
   wickHit.scale.set(coarse ? 1.4 : 1, coarse ? 1.15 : 1, coarse ? 1.4 : 1);
   flameUniforms.uSteps.value = w < 760 ? 22 : 32;
   smokeUniforms.uSteps.value = w < 760 ? 14 : 18;
   if (tier >= 1) flameUniforms.uSteps.value = Math.min(flameUniforms.uSteps.value, tier >= 2 ? 16 : 24);
   if (tier >= 2) smokeUniforms.uSteps.value = Math.min(smokeUniforms.uSteps.value, 10);
-}
-
-function updateBulbSize() {
-  const fovRad = THREE.MathUtils.degToRad(camera.fov);
-  bulbUniforms.uSize.value = renderer.getPixelRatio() * window.innerHeight / (2 * Math.tan(fovRad / 2));
 }
 
 setupComposer();
@@ -2002,22 +1893,20 @@ function intro() {
   const curtain = document.getElementById('curtain');
   if (reduceMotion) {
     gsap.set(curtain, { autoAlpha: 0 });
-    bulbUniforms.uLevel.value = BULB_REST;
+    roomLight.level = ROOM_LIGHT_REST;
     return;
   }
-  gsap.set(rig, { dolly: -1.15, lift: 0.4, orbit: -0.22 });
+  gsap.set(rig, { dolly: -0.35, lift: 0.1, orbit: -0.05 });
   gsap.timeline({ delay: 0.15 })
-    .to(curtain, { autoAlpha: 0, duration: 1.8, ease: 'power2.out' })
-    .to(rig, { dolly: 0, lift: 0, orbit: 0, duration: 3.6, ease: 'power3.out' }, 0)
-    .to(bulbUniforms.uLevel, { value: BULB_REST, duration: 2.4, ease: 'sine.inOut' }, 0.6)
-    .from('.chrome', { autoAlpha: 0, y: (i) => (i === 0 ? -10 : 14), duration: 1.1, ease: 'power2.out', stagger: 0.15, clearProps: 'all' }, 1.4);
+    .to(curtain, { autoAlpha: 0, duration: 1, ease: 'power2.out' })
+    .to(rig, { dolly: 0, lift: 0, orbit: 0, duration: 2, ease: 'power3.out' }, 0)
+    .to(roomLight, { level: ROOM_LIGHT_REST, duration: 1.6, ease: 'sine.inOut' }, 0.2);
 }
 intro();
 
 const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
 
-const chromeEls = [...document.querySelectorAll('.chrome')];
 let lastChromeInput = performance.now();
 let chromeQuiet = false;
 
@@ -2025,10 +1914,6 @@ function setChromeQuiet(quiet) {
   if (quiet === chromeQuiet) return;
   chromeQuiet = quiet;
   document.documentElement.dataset.chrome = quiet ? 'quiet' : 'awake';
-  for (const el of chromeEls) el.inert = quiet;
-  if (quiet && document.activeElement && document.activeElement.closest && document.activeElement.closest('.chrome')) {
-    document.activeElement.blur();
-  }
 }
 
 function revealChrome() {
@@ -2039,7 +1924,8 @@ function revealChrome() {
 function updateChrome() {
   const settled = state === 'burning' && stateT > 2.8 && !els.note.textContent;
   const idle = performance.now() - lastChromeInput > 3200;
-  setChromeQuiet(settled && idle);
+  const focused = document.activeElement?.closest?.('button, a');
+  setChromeQuiet(settled && idle && !focused);
 }
 
 revealChrome();
@@ -2075,41 +1961,47 @@ renderer.domElement.addEventListener('pointermove', (e) => {
   renderer.domElement.style.cursor = hot ? 'pointer' : 'default';
 });
 
-els.action.addEventListener('click', () => {
-  unlockAudio();
-  primary();
+view.bind({
+  primary,
+  sound() {
+    unlockAudio();
+    audio.muted = !audio.muted;
+    if (audio.master) audio.master.gain.value = audio.muted ? 0 : 0.26;
+    view.sound(audio.muted);
+    if (!audio.muted && state === 'burning') playMelody();
+  },
+  mic() {
+    if (mic.on) disableMic();
+    else enableMic();
+  },
 });
-
-els.mute.addEventListener('click', () => {
-  unlockAudio();
-  audio.muted = !audio.muted;
-  if (audio.master) audio.master.gain.value = audio.muted ? 0 : 0.26;
-  els.mute.setAttribute('aria-pressed', String(audio.muted));
-  els.mute.textContent = audio.muted ? '开声' : '静音';
-});
-
-els.blow.addEventListener('click', () => {
-  unlockAudio();
-  if (mic.on) disableMic();
-  else enableMic();
-});
+view.sound(audio.muted);
 
 window.addEventListener('pointerdown', revealChrome);
-window.addEventListener('keydown', (e) => {
-  revealChrome();
-  if (e.repeat) return;
-  if (e.key !== 'Enter' && e.key !== ' ') return;
-  if (e.target && e.target.closest && e.target.closest('button')) return;
-  e.preventDefault();
-  unlockAudio();
-  primary();
-});
+window.addEventListener('keydown', revealChrome);
 
-motionQuery.addEventListener('change', (ev) => {
+function onMotionChange(ev) {
   reduceMotion = ev.matches;
+  if (reduceMotion) {
+    gsap.killTweensOf(rig);
+    gsap.set(rig, { dolly: 0, lift: 0, orbit: 0, aim: 0 });
+    confettiFx.reset();
+    if (celebrateTl) celebrateTl.progress(1);
+  }
   updateUI();
-});
+}
+motionQuery.addEventListener('change', onMotionChange);
 window.addEventListener('resize', resize);
+const stageResize = new ResizeObserver(resize);
+stageResize.observe(els.stage);
+
+function onVisibilityChange() {
+  if (document.hidden) {
+    disableMic();
+    audio.ctx?.suspend().catch(() => {});
+  } else if (!audio.muted) audio.ctx?.resume().catch(() => {});
+}
+document.addEventListener('visibilitychange', onVisibilityChange);
 
 let last = performance.now();
 let elapsed = 0;
@@ -2137,8 +2029,7 @@ function setQuality(next) {
   const pr = Math.min(window.devicePixelRatio || 1, window.innerWidth < 760 ? 1.25 : 1.5, prCap);
   renderer.setPixelRatio(pr);
   composer.setPixelRatio(pr);
-  composer.setSize(window.innerWidth, window.innerHeight);
-  updateBulbSize();
+  composer.setSize(els.stage.clientWidth, els.stage.clientHeight);
 }
 
 function adaptQuality(dt) {
@@ -2151,7 +2042,10 @@ function adaptQuality(dt) {
   }
 }
 
+let running = true;
+let frameId;
 function tick(now) {
+  if (!running) return;
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   time += dt;
@@ -2172,7 +2066,37 @@ function tick(now) {
   }
   composer.render();
   adaptQuality(dt);
-  requestAnimationFrame(tick);
+  frameId = requestAnimationFrame(tick);
 }
 
-requestAnimationFrame(tick);
+renderer.domElement.addEventListener('webglcontextlost', (event) => {
+  event.preventDefault();
+  document.dispatchEvent(new Event('candle:render-failed'));
+});
+
+export function disposeScene() {
+  if (!running) return;
+  running = false;
+  cancelAnimationFrame(frameId);
+  stageResize.disconnect();
+  window.removeEventListener('resize', resize);
+  window.removeEventListener('pointerdown', revealChrome);
+  window.removeEventListener('keydown', revealChrome);
+  motionQuery.removeEventListener('change', onMotionChange);
+  document.removeEventListener('visibilitychange', onVisibilityChange);
+  disableMic();
+  audio.ctx?.close().catch(() => {});
+  gsap.killTweensOf(rig);
+  if (celebrateTl) celebrateTl.kill();
+  if (celebrationLightTl) celebrationLightTl.kill();
+  wishSplit?.revert();
+  gsap.set([celebrateEl, wishSub], { clearProps: 'all' });
+  confettiFx.reset();
+  composer.dispose();
+  for (const pass of composer.passes) pass.dispose?.();
+  renderer.dispose();
+}
+window.addEventListener('pagehide', (event) => {
+  if (!event.persisted) disposeScene();
+});
+frameId = requestAnimationFrame(tick);
